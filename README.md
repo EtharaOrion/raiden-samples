@@ -3,7 +3,7 @@
 > **Agentic-coding RL environments in Harbor format · 40 tasks ·
 > 3 404 held-out tests · offline-by-construction service simulation ·
 > scalar reward in `[0, 1]`**
-
+ 
 ![deliveries](https://img.shields.io/badge/deliveries-2-blue)
 ![tasks](https://img.shields.io/badge/tasks-40-informational)
 ![tests](https://img.shields.io/badge/held--out_tests-3404-success)
