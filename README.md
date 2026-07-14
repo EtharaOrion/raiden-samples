@@ -232,8 +232,6 @@ the number of tests they generate are what drive the reward-granularity design.
 | `rb`         |    5  || `create-table`     |    5  |
 |              |       || `put-item`         |    5  |
 
-![Opus 4.8 vs Haiku 4.5 on 20 AWS CLI tasks — sorted by Haiku reward ascending; longer dumbbell = more RL-training headroom](assets/opus_vs_haiku.png)
-
 ## Dataset structure
 
 Each task lives under `dataset/<uuid>/` and is fully self-contained:
