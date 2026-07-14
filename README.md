@@ -76,8 +76,6 @@ is defined):
 raiden-samples/
 ├── README.md                 # this document
 ├── LICENSE                   # MIT (Ethara.AI 2026)
-├── REQUIREMENTS.md           # the pilot requirements this repo satisfies
-├── make_plot.py              # regenerates all charts under assets/ from dataset/ + trajectories/
 ├── assets/                   # figures
 │   ├── hero.png              # README banner
 │   ├── opus_vs_haiku.png     # per-task reward dumbbell chart (Opus vs Haiku, 20 tasks)
@@ -354,16 +352,6 @@ for m, xs in sorted(by_model.items()):
     print(f"{m:22s} n={len(xs):2d}  mean={sum(xs)/len(xs):.4f}  pass@1={at1:.4f}")
 # -> claude-haiku-4-5      n=20  mean=0.4888  pass@1=0.0000
 # -> claude-opus-4-8       n=20  mean=0.9557  pass@1=0.3000
-```
-
-### Regenerate the charts
-
-All three charts in this document (`assets/opus_vs_haiku.png`, `assets/reward_by_tier.png`,
-`assets/cost_by_tier.png`) are generated from the shipped `dataset/` and `trajectories/`:
-
-```bash
-python3 make_plot.py                 # writes all three charts under assets/
-python3 make_plot.py out.png         # or write only the dumbbell chart to a custom path
 ```
 
 ### Re-run a single task in Docker
