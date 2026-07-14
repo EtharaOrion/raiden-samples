@@ -1,697 +1,387 @@
-# Raiden Samples: AWS CLI
+<p align="center">
+  <img src="assets/hero.png" alt="Raiden: 20 tasks, 40 graded runs, 2 frontier models" width="880">
+</p>
 
-> **Agentic-coding RL environments in Harbor format · 40 tasks ·
-> 3 404 held-out tests · offline-by-construction service simulation ·
-> scalar reward in `[0, 1]`**
- 
-![deliveries](https://img.shields.io/badge/deliveries-2-blue)
-![tasks](https://img.shields.io/badge/tasks-40-informational)
-![tests](https://img.shields.io/badge/held--out_tests-3404-success)
-![format](https://img.shields.io/badge/format-Harbor_0.13.1-9cf)
-![reward](https://img.shields.io/badge/reward-passed%2Ftotal_∈_%5B0%2C1%5D-brightgreen)
-![status](https://img.shields.io/badge/status-sample_delivery-yellow)
+<p align="center">
+  <strong>Agentic-coding RL training environments for stateful CLI implementation, calibrated across a capability gap.</strong>
+</p>
 
-**Raiden** is a set of reinforcement-learning training environments for
-agentic code generation. Each task drops a coding agent into a
-containerized workspace, hands it a prose spec, hides the test suite,
-and grades the resulting submission on the fraction of E2E tests that
-pass. All tasks ship in the
-[Harbor](https://github.com/harbor-framework/harbor) format so any
-Harbor-compatible runner can drive them without adaptation.
+<p align="center">
+  <a href="#summary"><img alt="Built by Ethara.AI" src="https://img.shields.io/badge/built%20by-Ethara.AI-ee00ee.svg"></a>
+  <a href="#scoring-methodology"><img alt="Scoring: continuous, passed/total" src="https://img.shields.io/badge/scoring-continuous_·_passed%2Ftotal-35d0ba.svg"></a>
+  <a href="#scoring-methodology"><img alt="Verifier: offline, hermetic" src="https://img.shields.io/badge/verifier-offline_·_hermetic-845EF7.svg"></a>
+  <a href="#verification-and-quality-assurance"><img alt="Difficulty: measured, never claimed" src="https://img.shields.io/badge/difficulty-measured%2C_never_claimed-ff6b6b.svg"></a>
+</p>
 
-This repository holds **two scoped pilot deliveries**, one per AWS
-CLI service family. They share the same envelope, grader, and agent
-contract; they differ only in the CLI surface under test, the
-simulation backend, and the calibration numbers.
+<p align="center"><sub>
+  <a href="#summary">Summary</a> · <a href="#repository-layout">Layout</a> · <a href="#difficulty-tiers">Tiers</a> · <a href="#results-reward-vs-model-capability">Results</a> · <a href="#analysis">Analysis</a> · <a href="#coverage">Coverage</a> · <a href="#dataset-structure">Dataset</a> · <a href="#trajectory-structure">Trajectories</a> · <a href="#scoring-methodology">Scoring</a> · <a href="#reproduction">Reproduction</a> · <a href="#verification-and-quality-assurance">Verification</a>
+</sub></p>
 
-## Table of contents
+# Raiden Samples: 20-Task AWS CLI Evaluation Sample
 
-- [Deliveries at a glance](#deliveries-at-a-glance)
-- [Repository layout](#repository-layout)
-- [Motivation & intended use](#motivation--intended-use)
-- [What Raiden is](#what-raiden-is)
-- [Shared contract (both deliveries)](#shared-contract-both-deliveries)
-- [Scope of the deliveries](#scope-of-the-deliveries)
-  - [S3 scope: 10 tasks](#s3-scope-10-tasks)
-  - [DynamoDB scope: 30 tasks](#dynamodb-scope-30-tasks)
-- [Methodology & reward design](#methodology--reward-design)
-- [How grading works](#how-grading-works)
-- [Quality posture](#quality-posture)
-- [Model calibration](#model-calibration)
-  - [S3 calibration](#s3-calibration)
-  - [DynamoDB calibration](#dynamodb-calibration)
-- [`task.toml` quick reference](#tasktoml-quick-reference)
-- [Reproducing a single task locally](#reproducing-a-single-task-locally)
-- [Reproducibility & provenance](#reproducibility--provenance)
-- [Versioning, licensing & citation](#versioning-licensing--citation)
-- [Design notes](#design-notes)
+**Raiden measures whether an agent can build a stateful CLI application from a prose spec, not
+just fix an isolated bug.** Each task drops the agent into a containerized workspace, hands it an
+`instruction.md`, hides the test suite, and grades the resulting submission on the fraction of
+end-to-end tests that pass. Where SWE-style benchmarks patch a single issue in an existing
+codebase, Raiden targets full implementation from scratch of a real CLI contract (argument
+parsing, wire semantics, error and exit-code contract, and cross-command state persistence),
+scored on a continuous reward that supports RL training and evaluation.
 
----
+This is a curated **20-task** sample from Raiden, split across two AWS CLI service families
+(`aws s3` and `aws dynamodb`). Each task is paired with the complete agent trajectories of two
+frontier models (Claude Opus 4.8 and Claude Haiku 4.5) at 1 run per model, for **40 graded runs**
+in total, each scored by the same `test.sh` verifier the training consumer uses.
 
-## Deliveries at a glance
+Tasks are stratified into three difficulty tiers (Easy, Medium, Hard), calibrated from observed
+Haiku reward on this sample, and cover 15 distinct AWS CLI commands across 2 service surfaces.
 
-| Delivery scope       | Tasks | Held-out tests | Simulation backend       | Opus 4.8 mean | Haiku 4.5 mean | Mean gap |
-| -------------------- | ----: | -------------: | ------------------------ | ------------: | -------------: | -------: |
-| `aws s3` CLI         |    10 |            626 | MinIO (session-scoped)   |        0.9276 |         0.4477 |  +0.4799 |
-| `aws dynamodb` CLI   |    30 |          2 778 | DynamoDB Local sidecar   |        0.9759 |         0.7225 |  +0.2534 |
-| **Combined**         |    40 |          3 404 | - | - | - | - |
+The per-task reward gap between the two models grows sharply as task difficulty rises: Opus 4.8
+stays near the ceiling on every task while Haiku 4.5 spreads across the full `[0, 1]` range. See
+[Results](#results-reward-vs-model-capability) for the tier-level breakdown.
 
-Per-task calibration chart (all 40 tasks in one figure, sorted by Opus
-reward ascending; task labels are colored by scope, green for S3, blue
-for DynamoDB):
+![Per-task reward for Opus 4.8 vs Haiku 4.5 — sorted by Haiku reward ascending; longer dumbbell = more RL-training headroom](assets/opus_vs_haiku.png)
 
-- [`opus_vs_haiku.png`](./opus_vs_haiku.png)
+> **This is a representative, quality-controlled sample of the full Raiden corpus,** provided for
+> evaluation. The task format ([Harbor 0.13.1](https://github.com/harbor-framework/harbor)),
+> trajectory format, and scoring are identical to the production RL-training deliveries.
 
-Both deliveries live side-by-side under the same flat `dataset/` and
-`trajectories/` folders, see [Repository layout](#repository-layout).
-Which service a given task belongs to is recorded in its
-`task.toml.metadata.keywords` (`aws_cli_s3` vs `aws_cli_dynamodb`) and in
-its `task.toml.metadata.commands` list.
+## Summary
+
+| Property             | Value                                                                              |
+| :------------------- | :--------------------------------------------------------------------------------- |
+| Tasks                | **20** (S3 10 / DynamoDB 10)                                                       |
+| Difficulty tiers     | 3, by **observed Haiku reward** (Easy ≥ 0.75, Medium 0.50–0.75, Hard < 0.50)       |
+| Models evaluated     | Claude Opus 4.8, Claude Haiku 4.5                                                  |
+| Runs & grid          | 1 per model (pass@1) = 2 per task, 40 total; full 2 × 1, no gaps                   |
+| Reward               | continuous `passed / total ∈ [0, 1]`, per run in `verifier_result.rewards.reward`  |
+| Held-out tests       | **1,577** total (S3 626 / DynamoDB 951)                                            |
+| Service surfaces     | 2 (`aws s3`, `aws dynamodb`) covering 15 unique CLI commands                       |
+| Simulation backends  | MinIO (S3, session-scoped), DynamoDB Local (`sha256`-pinned sidecar)               |
+| Format               | [Harbor 0.13.1](https://github.com/harbor-framework/harbor)                        |
+
+**Mean reward on this sample** (see [Scoring methodology](#scoring-methodology) for how the reward
+is defined):
+
+| Metric                           |  Value |
+| :------------------------------- | -----: |
+| Claude Opus 4.8 **mean reward**  | 0.9557 |
+| Claude Haiku 4.5 **mean reward** | 0.4888 |
+| **Capability gap (Δmean)**       | +0.4669 |
+| Claude Opus 4.8 **pass@1**       |  30.0% |
+| Claude Haiku 4.5 **pass@1**      |   0.0% |
 
 ## Repository layout
 
 ```
 raiden-samples/
-├── README.md                     # this file - covers both deliveries end-to-end
-├── LICENSE                       # MIT (Ethara.AI 2026), covers the whole repo
-├── REQUIREMENTS.md               # the pilot requirements this repo satisfies
-├── opus_vs_haiku.png             # combined per-task reward chart, all 40 tasks (10 S3 + 30 DynamoDB)
-├── dataset/                      # 40 Harbor-format tasks (UUID-named dirs), 10 S3 + 30 DynamoDB
-│   └── <task-uuid>/
-│       ├── instruction.md        # the spec the model sees
-│       ├── environment/
-│       │   ├── Dockerfile        # builds the task container
-│       │   └── docker-compose.yaml # boots the simulation-backend sidecar (MinIO or DynamoDB Local)
-│       ├── tests/
-│       │   ├── __init__.py       # marks tests/ as a package for pytest collection
-│       │   ├── _s3_http.py / _ddb_http.py # stdlib-only wire-protocol client for the fixtures
-│       │   ├── conftest.py       # anti-NOP guard, `cli` fixture, backend-reset autouse fixture
-│       │   ├── test.sh           # entrypoint: runs pytest, writes reward
-│       │   └── test_<...>.py     # per-command and cross-command E2E tests (hidden from the agent)
-│       ├── solution/
-│       │   ├── reference.diff    # reference solution as a git patch
-│       │   ├── golden.diff       # golden solution as a git patch
-│       │   └── solve.sh          # applies the selected patch and wires up submission/aws
-│       └── task.toml             # Harbor task metadata (scope = keywords + commands)
-└── trajectories/
-    ├── claude-opus-4-8/          # 40 pass@1 candidate-model trials (10 S3 + 30 DynamoDB)
-    │   └── <task-uuid>/
-    └── claude-haiku-4-5/         # 40 pass@1 weaker-model calibration trials (10 S3 + 30 DynamoDB)
-        └── <task-uuid>/
+├── README.md                 # this document
+├── LICENSE                   # MIT (Ethara.AI 2026)
+├── REQUIREMENTS.md           # the pilot requirements this repo satisfies
+├── make_plot.py              # regenerates all charts under assets/ from dataset/ + trajectories/
+├── assets/                   # figures
+│   ├── hero.png              # README banner
+│   ├── opus_vs_haiku.png     # per-task reward dumbbell chart (Opus vs Haiku, 20 tasks)
+│   ├── reward_by_tier.png    # per-tier mean reward bar chart (Easy / Medium / Hard)
+│   └── cost_by_tier.png      # per-tier mean agent cost per run bar chart (USD)
+├── dataset/                  # task definitions, one directory per UUID (20)
+│   └── <uuid>/ ...
+└── trajectories/             # model runs, one directory per UUID (20)
+    └── <uuid>/<model>/run_N/ ...   # model ∈ {claude-opus-4-8, claude-haiku-4-5}; N ∈ {1}
 ```
 
-The service scope of a given task is not encoded in the directory path
-, it is recorded inside each `task.toml`:
+Task UUIDs match **1:1** between `dataset/` and `trajectories/` (20 each). Under each task, both
+models appear as `<model>/` directories, each containing exactly one `run_1/` sample with the full
+runtime evidence (agent trajectory, verifier reward + XML, config, artifacts manifest).
 
-- **S3 tasks** carry `"aws_cli_s3"` in `metadata.keywords` and their
-  `metadata.commands` are drawn from `{mb, rb, cp, ls, mv, rm, sync}`.
-- **DynamoDB tasks** carry `"aws_cli_dynamodb"` in `metadata.keywords`
-  and their `metadata.commands` are drawn from
-  `{create-table, delete-item, delete-table, get-item, list-tables, put-item, query, update-item}`.
-
-A one-liner to list them:
+The service scope of each task is not encoded in the directory path; it is recorded in the task's
+`task.toml.metadata.keywords` (`aws_cli_s3` vs `aws_cli_dynamodb`). One-liner to list them:
 
 ```bash
-# S3 task UUIDs
-grep -l aws_cli_s3 dataset/*/task.toml | xargs -n1 dirname | xargs -n1 basename
-
-# DynamoDB task UUIDs
-grep -l aws_cli_dynamodb dataset/*/task.toml | xargs -n1 dirname | xargs -n1 basename
+grep -l aws_cli_s3       dataset/*/task.toml | xargs -n1 dirname | xargs -n1 basename   # 10 S3
+grep -l aws_cli_dynamodb dataset/*/task.toml | xargs -n1 dirname | xargs -n1 basename   # 10 DDB
 ```
 
----
-
-## Motivation & intended use
-
-**Why this exists.** Static coding benchmarks (function-completion,
-single-file bug-fix) saturate quickly and reward pattern-matching against
-visible tests. Raiden targets the harder regime: an agent must build a
-*stateful CLI application* from a prose spec, in a container, with the
-grader hidden. Both AWS CLI surfaces we ship (`aws s3` and
-`aws dynamodb`) are deliberate choices, they are stateful, they have a
-rich error-and-exit-code contract, and their wire semantics
-(S3 REST + XML for one, DynamoDB-JSON typed-attribute wire format
-plus condition-expression / query key-condition grammar for the
-other) are non-trivial to get right, so the tasks reward genuine
-implementation rather than recall.
-
-**Primary intended use.** A *reinforcement-learning reward source* for
-training and evaluating agentic code-generation models. The consumer
-runs their model on each task and uses `passed / total` as a scalar
-reward.
-
-**Also suitable for.**
-
-- **Offline evaluation** of an agent's ability to satisfy a real CLI
-  contract without seeing the grader.
-- **Ablations** on agent scaffolds, prompting, or reasoning budgets,
-  holding the environment fixed.
-- **A template** for authoring new stateful-CLI environments, the
-  Harbor envelope, grader, and runner contract are reusable across
-  services (see [Design notes](#design-notes)).
-
-**Out of scope / not designed for.**
-
-- **A leaderboard-grade benchmark as-is.** These are *sample
-  deliveries* of the task environments, they ship the tasks and
-  grader, not any scores.
-- **Fidelity to every AWS behavior.** Only the in-scope command
-  surfaces are exercised, and only to the extent the shipped
-  simulation backends emulate them; streams, global tables, PITR,
-  multi-region replication, S3 replication, KMS-integrated encryption,
-  server-access logging, and other out-of-scope AWS behaviors are
-  explicitly out of scope.
-
-**Audience.** ML researchers and engineers building or evaluating
-agentic code models, and authors extending Raiden to new CLI surfaces.
-
----
-
-## What Raiden is
-
-Raiden produces training data for agentic code models. Each task in
-either delivery is a self-contained job in the Harbor format: a
-containerized workspace, a spec, a hidden test suite, and a reference
-solution. The consumer runs the tasks against their model and uses the
-resulting pass rate as a reward signal.
-
-The contract a model faces, per task, when the consumer runs it:
-
-1. The model is dropped into a containerized workspace and given an
-   `instruction.md`, a spec describing the application it must build.
-2. The model writes the application from scratch (source files, entry
-   points, anything it needs). It does **not** see any test code.
-3. A held-out test suite is executed against the model's submission.
-   The fraction of tests that pass becomes a scalar reward in
-   `[0, 1]`, suitable for use as a reinforcement-learning reward signal.
-
-The tests are the ground truth for "did the model actually build the
-thing it was asked for". Because the model never sees them during
-generation, it must solve the spec on the merits, not pattern-match
-against the grader.
-
----
-
-## Shared contract (both deliveries)
-
-Both deliveries were produced from the same pipeline and share the
-same runtime and grading contract. Anything below applies uniformly to
-all 40 tasks.
-
-### The agent's contract, inside the container
-
-- **Workspace root:** `/workspace`
-- **Submission location:** the submission is exposed as an `aws`
-  executable on `$PATH`. The `Dockerfile` creates `/workspace/submission/`
-  and puts it first on `PATH`, so the harness's
-  `["/workspace/submission/aws", <cli>, ...]` invocation resolves to
-  whatever the agent placed there. The submission is
-  **language-agnostic**: the agent may write any files it wants under
-  `/workspace/submission/` and in any language, as long as
-  `/workspace/submission/aws` ends up as a runnable executable (a
-  native binary, a script with a shebang, or a wrapper that dispatches
-  to whatever it wants underneath).
-- **Invocation:** the test harness calls
-  `aws <cli> <command> [args...]` as a subprocess for every test
-  (`aws s3 ...` in the S3 delivery, `aws dynamodb ...` in the
-  DynamoDB delivery).
-- **AWS credentials and endpoint.** `AWS_ACCESS_KEY_ID=raidentest`,
-  `AWS_SECRET_ACCESS_KEY=raidentest`, and
-  `AWS_DEFAULT_REGION=us-east-1` are baked into every image. Each
-  delivery's `docker-compose.yaml` brings up its simulation sidecar
-  (MinIO for S3 on a loopback port, DynamoDB Local for DynamoDB as the
-  `ddb` service on port 8000) and injects the appropriate
-  service-scoped endpoint via env
-  (`AWS_ENDPOINT_URL_S3` / `AWS_ENDPOINT_URL_DYNAMODB` plus the
-  catch-all `AWS_ENDPOINT_URL`). Submissions must not override
-  credentials, region, or endpoints in code.
-- **State reset.** An autouse fixture in `tests/conftest.py` wipes the
-  simulation-backend state (drops all buckets / drops all tables)
-  before and after every test, so cases are independent.
-- **Reward sink:** `/logs/verifier/reward.txt`, a float in `[0, 1]`
-  equal to `passed / total`, written by `tests/test.sh`.
-- **Anti-NOP guard (uniform across all 40 tasks).**
-  `tests/conftest.py::pytest_configure` calls
-  `pytest.exit(returncode=1, …)` before any test collects if
-  `/workspace/submission/aws` is absent, a missing submission scores
-  exactly `0.0`, and the parser in `test.sh` writes `reward=0.0` in
-  that case because no JUnit XML is produced. The
-  `error-invalid-args` behaviour class asserts `returncode != 0`
-  (any non-zero code from the documented per-scope contract is
-  accepted), so a stub that merely `exit 0`s on every invocation
-  still fails the entire invalid-args block.
-
-### Runtime scaffold
-
-- **Format.** [Harbor 0.13.1](https://github.com/harbor-framework/harbor)
-  task envelope: `instruction.md` +
-  `environment/{Dockerfile, docker-compose.yaml}` + `tests/` +
-  `solution/{reference.diff, golden.diff, solve.sh}` + `task.toml`.
-- **Agent scaffold** used to produce the shipped trajectories:
-  `openhands-sdk v1.12.0` (pinned by immutable release tag) under
-  Harbor 0.13.1, `n_attempts=1` (pass@1), `n_concurrent_trials=4`,
-  `max_iterations=1000`, `force_adaptive_thinking=true`,
-  `LLM_REASONING_EFFORT=high`.
-
----
-
-## Scope of the deliveries
-
-### S3 scope: 10 tasks
-
-Every task asks the agent to implement a subset of `aws s3` commands
-drawn from the full set `{mb, rb, cp, ls, mv, rm, sync}` (7 commands).
-The subset sizes in this delivery are concentrated around 4 – 5
-commands per task.
-
-Each task ships a focused test suite covering happy paths, error cases,
-edge cases, and **cross-command workflow tests** that verify state
-stays consistent across operations (e.g. `mb` → `cp` local→S3 → `ls`
-finds the object → `cp` S3→local round-trips identical content).
-
-| Metric                  | Min | Max | Average | Total |
-| ----------------------- | --- | --- | ------- | ----- |
-| Tests per task          | 44  | 84  | ~63     | 626   |
-
-Behaviour-tag classes for S3: `happy_path` / `error` / `edge` /
-`workflow`. S3 itself is simulated by a per-session
-[MinIO](https://min.io/) server booted from `tests/conftest.py`, no
-real AWS account, no network egress, fully deterministic, fully
-offline.
-
-### DynamoDB scope: 30 tasks
-
-Every task asks the agent to implement a subset of `aws dynamodb`
-commands drawn from the full set
-`{create-table, delete-item, delete-table, get-item, list-tables, put-item, query, update-item}`
-(8 commands). The subset sizes are concentrated around 6 – 7 commands:
-
-| Commands per task | 5 | 6  | 7  | 8 |
-| ----------------- | - | -- | -- | - |
-| Number of tasks   | 4 | 14 | 10 | 2 |
-
-Each task ships a focused test suite covering happy paths,
-invalid-args errors, nonexistent-resource errors, edge cases, and
-**cross-command workflow tests** that verify state stays consistent
-across operations (e.g. `create-table` → `put-item` → `query` →
-`delete-item` → `get-item` returns no `Item`). All 30 tasks ship
-multiple workflow tests.
-
-| Metric                  | Min | Max | Average | Total  |
-| ----------------------- | --- | --- | ------- | ------ |
-| Tests per task          | 71  | 120 | ~93     | 2 778  |
-| Workflow tests per task | 6   | 12  | ~11.1   | 332    |
-
-Behaviour-tag classes for DynamoDB: `happy_path` /
-`error_invalid_args` / `error_nonexistent` / `edge` / `workflow`.
-DynamoDB itself is simulated inside the container by
-[`amazon/dynamodb-local:2.5.4`](https://hub.docker.com/r/amazon/dynamodb-local)
-running as a compose sidecar (`-inMemory -sharedDb -port 8000`), no
-real AWS account, no network egress, fully deterministic, fully
-offline.
-
-### Side-by-side scope comparison
-
-| Aspect                              | S3 scope                                                              | DynamoDB scope                                                                                                    |
-| ----------------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Full command set                    | `{mb, rb, cp, ls, mv, rm, sync}` (7)                                  | `{create-table, delete-item, delete-table, get-item, list-tables, put-item, query, update-item}` (8)              |
-| Simulation backend                  | [MinIO](https://min.io/) (session-scoped, spawned by `conftest.py`)   | `amazon/dynamodb-local:2.5.4` sidecar via compose (`sha256`-pinned)                                               |
-| Wire-protocol test client           | `_s3_http.py` (stdlib-only S3 REST client)                             | `_ddb_http.py` (stdlib-only DynamoDB JSON client)                                                                 |
-| Endpoint env                        | `AWS_ENDPOINT_URL_S3` (+ `AWS_ENDPOINT_URL`)                          | `AWS_ENDPOINT_URL_DYNAMODB=http://ddb:8000` (+ `AWS_ENDPOINT_URL`)                                                |
-| Behaviour-tag classes               | 4 (`happy_path` / `error` / `edge` / `workflow`)                      | 5 (`happy_path` / `error_invalid_args` / `error_nonexistent` / `edge` / `workflow`)                                |
-| Per-task test counts                | 44 – 84 (avg ~63)                                                     | 71 – 120 (avg ~93)                                                                                                |
-| Exit-code contract (per spec)       | Any non-zero on error (usage-error `{2, 252, 255}` acceptable)         | Single closed set `{0, 1, 252, 254, 255}` documented in every `instruction.md`                                    |
-
----
-
-## Methodology & reward design
-
-### Reward construction
-
-The reward is intentionally the simplest signal that is dense and
-monotone in capability: the **fraction of held-out tests that pass**,
-`reward = passed / total ∈ [0, 1]`. There is no partial credit within
-a test, no weighting across tests, and no exit-code shortcut, the
-scalar is computed only from pytest outcomes. This keeps the signal
-interpretable (a `0.05` gain is "≈5% more of the suite") and trivially
-comparable across attempts on the same task.
-
-**Why per-test fraction rather than all-or-nothing.** Agentic coding
-is partial by nature: a policy may get `create-table` /
-`list-tables` / `put-item` right but botch `query`'s key-condition
-grammar (DynamoDB), or nail `mb` / `cp` / `ls` but miss the
-`--recursive` semantics of `rm` (S3). A binary "all tests pass"
-reward would be near-zero for every realistic rollout early in
-training and would carry almost no gradient. The fractional reward
-exposes which behaviors are already solved and turns the suite into a
-dense curriculum.
-
-**Reward granularity is a function of test composition.** Because
-every test contributes `1/total`, the distribution of tests across
-behaviors directly sets the reward's sensitivity. In DynamoDB the
-happy-path block dominates the denominator (~52% of tests on average),
-while the error and edge blocks are compressed to a small set of
-boundary cases (missing table, schema-mismatched key, oversized
-string / attribute-set, condition-check failure) so a single code
-path cannot swing the reward disproportionately. S3 has a similar
-composition, adjusted for the different behaviour-tag taxonomy.
-
-### Discrimination
-
-Each task is constructed to separate strong from weak policies:
-
-- **Floor.** All 40 tasks have an effective empty-submission floor of
-  `0.0` for naive empty / missing / non-executable stubs, enforced by
-  the conftest-level anti-NOP guard (which aborts pytest before any
-  test collects and produces no JUnit XML, so the `test.sh` parser
-  writes `reward=0.0`).
-- **Ceiling.** The reference solution (`solution/reference.diff`)
-  passes the full suite on every task, so `1.0` is attainable in
-  principle.
-- **Spread.** Between these bounds the suite grades partial progress
-  smoothly, so a policy's reward tracks how much of the CLI contract
-  it actually satisfies, the tasks are neither trivially passed nor
-  impossible.
-
-### Anti-gaming design
-
-The agent never sees test code during generation, so it cannot
-overfit the grader; it must satisfy the underlying service semantics
-on the merits. The contract is enforced through a real subprocess
-invocation (`aws <cli> <command> …`) against a live simulation
-backend (MinIO or DynamoDB Local), so the submission is graded on
-observable behavior (stdout, stderr, exit code, and resulting
-bucket / object / table / item state read back via the raw HTTP
-client) rather than on internal structure.
-
----
-
-## How grading works
-
-`tests/test.sh` is the single E2E entrypoint per task. It:
-
-1. Runs the full pytest suite under `tests/` with `-p no:randomly` so
-   test order is deterministic, captures human-readable output to
-   `/logs/verifier/pytest_output.log`, and emits a structured JUnit
-   XML report to `/logs/verifier/results.xml` via pytest's built-in
-   `--junit-xml` flag.
-2. Computes counts (`tests`, `failures`, `errors`, `skipped`) from
-   the JUnit XML via Python stdlib `xml.etree.ElementTree`, and
-   cross-checks the collected count against
-   `task.toml.tests_shipped`. If a collection error silently drops
-   tests on the floor (`collected < tests_shipped`), the parser
-   refuses to grade and writes `reward = 0.0` with a clear diagnostic
-   on stderr.
-3. Computes `reward = round(passed / (passed + failures + errors), 4)`,
-   intentionally excluding `skipped` / `xfail` / `deselected` from
-   the denominator so they neither help nor hurt the score.
-4. Writes that reward to `/logs/verifier/reward.txt` and echoes a
-   one-line summary (`reward=… parser=v2`) to stdout.
-5. Always exits `0`, regardless of pass/fail count, the reward file
-   is the grading channel, not the exit code.
-
-The full pytest stdout is preserved at
-`/logs/verifier/pytest_output.log` inside the container alongside the
-JUnit XML report.
-
----
-
-## Quality posture
-
-Every task in both deliveries satisfies:
-
-- **Discriminative reward.** The reference solution under
-  `solution/reference.diff` passes the full test suite. Across all 40
-  tasks a naive empty / missing / non-executable stub scores exactly
-  `0.0` because the conftest-level anti-NOP guard aborts pytest before
-  any test collects, so no JUnit XML is produced and the `test.sh`
-  parser writes `reward=0.0`. Each `task.toml` carries
-  `discriminative = true`.
-- **Feature coverage.** Tests exercise every command in the task's
-  subset across the delivery's behaviour-tag classes plus
-  cross-command workflows. The per-task counts in
-  `task.toml[metadata.behaviour_tag_counts]` show the split.
-- **State-persistence coverage.** Every task ships multiple workflow
-  tests asserting cross-command state, S3: `mb` → `cp` → `ls` →
-  `cp back` round-trips identical content; DynamoDB: `create-table`
-  → `put-item` → `query` → `delete-item` → `get-item` returns no
-  `Item`.
-- **Hermetic execution.** No real AWS, no internet, no flaky
-  time-dependent paths. The `docker-compose.yaml` under each
-  `environment/` pins ~30 external hostnames (`pypi.org`,
-  `github.com`, `s3.amazonaws.com`, `dynamodb.amazonaws.com`,
-  package mirrors, …) to `0.0.0.0` at the container level, and
-  `tests/conftest.py` installs a `socket.connect` guard that raises
-  on any connect to a non-loopback / non-private IP or to a known
-  package-index / cloud-CLI hostname. `PYTHONHASHSEED=0`, `TZ=UTC`,
-  and `LC_ALL=C.UTF-8` are baked into every image. The DynamoDB
-  Local sidecar is pinned by `sha256` digest and runs
-  `-inMemory -sharedDb` for deterministic startup and no on-disk
-  state leakage.
-- **Container reliability.** Each `environment/Dockerfile` builds
-  from a pinned base image (S3:
-  `aws_cli_s3` `sha256`-pinned in ECR; DynamoDB:
-  `426628337772.dkr.ecr.ap-south-1.amazonaws.com/aws_cli_dynamodb@sha256:9ca8d49449e64b5226138ff660ba8c9bbc52c0c8490b9b0fd01f7a95d5d107f2`)
-  on a fresh machine with no extra inputs; the image is
-  implementation-agnostic and puts `/workspace/submission/` on
-  `$PATH`, accepting whatever `aws` executable the agent writes
-  there.
-- **Deterministic grading.** `test.sh` runs pytest with randomization
-  disabled and reduces output to a single scalar reward written to
-  `/logs/verifier/reward.txt`. The autouse fixture wipes
-  simulation-backend state before every test so state never leaks
-  across cases.
-- **Upstream validation.** The reference solutions were
-  sanity-checked against the real upstream `aws s3` / `aws dynamodb`
-  CLIs, the shipped specs are compatible with the observable
-  behaviour of the upstream tools on the in-scope command surfaces.
-  For DynamoDB the exit-code contract, documented in every
-  `instruction.md`, is a single closed set, `{0, 1, 252, 254, 255}`
- , where `0` is success, `1` is an application error, `252` is a
-  parameter / usage error, `254` is a service-modeled error
-  (`ResourceNotFoundException` / `ConditionalCheckFailedException`
-  / `ValidationException`), and `255` is any other or general error.
-  Tests assert `returncode != 0` on error paths so any non-zero code
-  in the documented set is acceptable.
-
----
-
-## Model calibration
-
-To validate that each suite discriminates cleanly across capability
-tiers, two Anthropic models were run end-to-end against every task in
-both deliveries, the strong **candidate model**
-(**Claude Opus 4.8**) and a deliberately **weaker calibration model**
-(**Claude Haiku 4.5**), under the `openhands-sdk v1.12.0` /
-`harbor 0.13.1` scaffold, with `max_iterations = 1000` and
-`LLM_REASONING_EFFORT=high` (`force_adaptive_thinking=true`). Reward
-is the same scalar every consumer sees: `passed / total ∈ [0, 1]`
-written to `/logs/verifier/reward.txt`. The two-model design lets the
-candidate reward bound the ceiling while the weaker-model reward
-surfaces the intra-suite difficulty gradient.
-
-Trajectories for both models on both deliveries ship under
-`trajectories/claude-{opus-4-8,haiku-4-5}/<task-uuid>/`; each trial
-dir carries the full runtime evidence (agent log, verifier reward,
-JUnit XML, trial config). The 10 S3 UUIDs and 30 DynamoDB UUIDs are
-mutually disjoint, so `trajectories/claude-opus-4-8/` mixes all 40
-tasks and the scope of each is resolved by reading the corresponding
-`dataset/<uuid>/task.toml`.
-
-![Opus 4.8 vs Haiku 4.5: 40 AWS CLI tasks (10 S3 + 30 DynamoDB), sorted by Opus reward ascending; task labels colored green for S3, blue for DynamoDB](opus_vs_haiku.png)
-
-Difficulty tiers use fixed thresholds: **Easy ≥ 0.75**,
-**Medium 0.50 – 0.75**, **Hard < 0.50**. Combined summary across all
-40 tasks: mean(Opus) `0.9638`, mean(Haiku) `0.6538`,
-**Δmean `+0.3100`**, Opus range `[0.8000, 1.0000]`,
-Haiku range `[0.0000, 1.0000]`. Per-scope breakdowns follow.
-
-### S3 calibration
-
-| Metric    | Opus 4.8 | Haiku 4.5 |
-| --------- | -------: | --------: |
-| n         |       10 |        10 |
-| mean      |   0.9276 |    0.4477 |
-| median    |   0.9282 |    0.5052 |
-| min       |   0.8864 |    0.1757 |
-| max       |   0.9892 |    0.7544 |
-| max − min |   0.1028 |    0.5787 |
-
-**Mean gap (S3):** Opus − Haiku = **+0.4799**.
-
-Difficulty distribution on the S3 suite:
-
-- **Opus 4.8:** 10 easy, 0 medium, 0 hard, the flagship saturates
-  the suite. This bounds the reward ceiling and confirms the
-  reference-quality attainable performance, but does not
-  discriminate *within* the top tier.
-- **Haiku 4.5:** 1 easy, 4 medium, 5 hard, the weaker model
-  surfaces the underlying task-difficulty gradient. The "hard for
-  Haiku" bucket collects the five tasks with the largest
-  Opus − Haiku gaps
-  (`5404935d`, `4282c1c5`, `6e680093`, `a2ad06c7`, `ef44d21c`).
-
-### DynamoDB calibration
-
-| Metric    | Opus 4.8 | Haiku 4.5 |
-| --------- | -------: | --------: |
-| n         |       30 |        30 |
-| mean      |   0.9759 |    0.7225 |
-| median    |   0.9929 |    0.9590 |
-| min       |   0.8000 |    0.0000 |
-| max       |   1.0000 |    1.0000 |
-| max − min |   0.2000 |    1.0000 |
-
-**Mean gap (DynamoDB):** Opus − Haiku = **+0.2534**.
-
-Difficulty distribution on the DynamoDB suite:
-
-- **Opus 4.8:** 30 easy, 0 medium, 0 hard, the flagship saturates
-  the suite and lands in `[0.800, 1.000]`, saturating on 15 of the
-  30 tasks.
-- **Haiku 4.5:** 21 easy, 0 medium, 9 hard, the weaker model
-  surfaces the underlying task-difficulty gradient with an unusually
-  **bimodal** distribution: on 21 tasks it lands in the same easy
-  band as Opus, and on 9 tasks it collapses to the floor (`≤ 0.19`),
-  including one task where it scores exactly `0.0` (`c6589969`)
-  despite Opus scoring `1.000` on the same task. There is
-  effectively no medium band.
-
-The nine "hard for Haiku" DynamoDB tasks (in ascending Haiku reward:
-`c6589969`, `54c57af9`, `221e3fcb`, `94f62f3e`, `90b629b2`,
-`2ddd0759`, `0c6a9e33`, `ffdb5c64`, `b1b0f66f`) are the natural
-hard-tier candidates for a curriculum.
-
-### What the calibration shows
-
-- **The rewards are meaningful and discriminative.** The two
-  Anthropic tiers separate cleanly in mean reward on both deliveries
-  (S3 gap +0.48, DynamoDB gap +0.25). Opus outscores Haiku on the
-  clear majority of tasks in both suites, and the largest per-task
-  gaps cluster on the hard-for-Haiku tasks.
-- **Neither suite is saturated.** On S3, Haiku's per-task spread is
-  ~5.6× wider than Opus's. On DynamoDB, Haiku's spread is 5× wider
-  than Opus's, and the presence of 9 hard-for-Haiku tasks (2 of
-  them scoring `≤ 0.11`, including 1 exact zero) shows the tests
-  are still grading capability at the mid-tier, the reward is
-  *dense* rather than a step function.
-- **Neither suite is impossible.** Every task admits a reference
-  solution that passes the full suite; on both deliveries the Opus
-  ceiling is reachable and the gaps to `1.0` on the remaining tasks
-  reflect specific missing edge cases (S3: recursive-prefix
-  deletion semantics, progress-preamble output shape; DynamoDB:
-  DynamoDB-JSON attribute round-tripping on nested `M` / `L`
-  values, condition-expression precedence, `query`
-  `KeyConditionExpression` grammar corners) rather than an
-  unreachable target.
-- **Task labels emerge from the reward.** Because Opus saturates,
-  per-task difficulty is best read off the Haiku column in each
-  suite. Any future difficulty label on `task.toml` can be justified
-  against this weaker-model column rather than against saturating
-  candidate-model scores.
-
-### How the calibration was produced
-
-- **Scaffold:** `openhands-sdk v1.12.0` under `harbor 0.13.1` with
-  `n_attempts = 1` (`pass@1`), `n_concurrent_trials = 4`,
-  `agent.kwargs = { max_iterations = 1000, force_adaptive_thinking = true }`,
-  `agent.env = { LLM_REASONING_EFFORT = "high" }`.
-- **Grader:** the shipped `tests/test.sh` on the pinned
-  `sha256`-digest image for each delivery, the same one every
-  consumer sees.
-- **Randomness:** none, pytest runs with `-p no:randomly`,
-  `PYTHONHASHSEED=0`, `TZ=UTC`, `LC_ALL=C.UTF-8`; simulation
-  backends are pinned by `sha256` (DynamoDB Local) or by upstream
-  release image (MinIO), and an autouse fixture wipes state before
-  and after every test.
-- **Aggregation:** for each model on each delivery, the reported
-  reward is the exact scalar written by `test.sh` to
-  `/logs/verifier/reward.txt`; means and medians are over the
-  per-task rewards (10 for S3, 30 for DynamoDB); no rounding beyond
-  the four-decimal fixed point emitted by the grader.
-
----
-
-## `task.toml` quick reference
-
-Each task carries a small TOML metadata file used by the training
-runner. The shape is uniform across both deliveries; the fields that
-vary are the command list, per-class behaviour-tag counts,
-`tests_shipped`, `simulation_backend`, and the image reference.
-A concrete DynamoDB task as the example:
-
-```toml
-version = "1.0"
-
-[task]
-name = "default/aws_cli_dynamodb-cliapp-create-table_delete-item_delete-table_get-item_list-tables_query-1efd7e2845"
-description = "Implement an `aws dynamodb` CLI subset (create-table, delete-item, delete-table, get-item, list-tables, query) from scratch"
-
-[metadata]
-category         = "feature"
-keywords         = ["aws_cli_dynamodb", "code_instruct", "cli_app", "subset",
-                    "create-table", "delete-item", "delete-table",
-                    "get-item", "list-tables", "query"]
-commands         = ["create-table", "delete-item", "delete-table",
-                    "get-item", "list-tables", "query"]
-behaviour_tags   = ["edge", "error_invalid_args", "error_nonexistent",
-                    "happy_path", "workflow"]
-subset           = true
-tests_shipped    = 75               # total pytest cases in the suite
-discriminative   = true
-
-[metadata.behaviour_tag_counts]
-happy_path         = 40
-error_invalid_args = 17
-edge               = 6
-error_nonexistent  = 4
-workflow           = 8
-
-[metadata.runtime]
-python_version     = "3.12"
-simulation_backend = "dynamodb_local"    # "minio" in S3 tasks
-entry_point        = "submission/aws"
-cpus               = 1.0
-memory_mb          = 1024
-timeout_sec        = 300
-pinned_deps        = [
-    "pytest==8.3.3",                     # S3 tasks add `minio==7.2.15`
-]
-
-[metadata.image]                    # logical reference to the task image
-uri = "426628337772.dkr.ecr.ap-south-1.amazonaws.com/aws_cli_dynamodb:task_env_rl"
-
-[environment]                       # what the runner actually pulls
-docker_image = "426628337772.dkr.ecr.ap-south-1.amazonaws.com/aws_cli_dynamodb@sha256:9ca8d49449e64b5226138ff660ba8c9bbc52c0c8490b9b0fd01f7a95d5d107f2"
+## Difficulty tiers
+
+The 20 tasks are stratified into three tiers by **observed Haiku 4.5 reward** on this sample:
+how much of each task's E2E suite the weaker calibration model passes. The Opus 4.8 candidate
+saturates the sample (all 20 tasks land in the Easy band for Opus), so Haiku carries the
+discriminative signal for tier assignment. This is an **outcome-based** stratification computed
+from the runs shipped here, so the tiers describe what a mid-tier model actually experienced
+rather than any property fixed in advance.
+
+Thresholds (fixed): **Easy ≥ 0.75**, **Medium 0.50–0.75**, **Hard < 0.50**.
+
+![Mean reward by difficulty tier — Opus 4.8 stays near the ceiling while Haiku 4.5 spreads across the tiers](assets/reward_by_tier.png)
+
+| Tier       |   n | mean Haiku reward | mean Opus reward |
+| :--------- | --: | ----------------: | ---------------: |
+| **Easy**   |   6 |            0.9093 |           0.9792 |
+| **Medium** |   4 |            0.5837 |           0.9401 |
+| **Hard**   |  10 |            0.1985 |           0.9479 |
+
+## Results: reward vs model capability
+
+The reward is a continuous scalar `passed / total ∈ [0, 1]`, written by `tests/test.sh` to
+`/logs/verifier/reward.txt` and copied into
+`trajectories/<uuid>/<model>/run_N/result.json` at `verifier_result.rewards.reward`. Because the
+reward is fractional per test rather than all-or-nothing, partial progress on a long
+implementation stays visible even when the strict `pass@1` (reward exactly 1.0) is 0.
+
+**Per-tier pass@1 by model** (fraction of each model's runs in the tier that scored exactly 1.0):
+
+| Tier (n)    | Claude Opus 4.8 | Claude Haiku 4.5 |
+| :---------- | --------------: | ---------------: |
+| Easy (6)    |           66.7% |             0.0% |
+| Medium (4)  |            0.0% |             0.0% |
+| Hard (10)   |           20.0% |             0.0% |
+
+**Per-tier mean reward by model** (partial credit in `[0, 1]`):
+
+| Tier (n)    | Claude Opus 4.8 | Claude Haiku 4.5 |
+| :---------- | --------------: | ---------------: |
+| Easy (6)    |          97.9%  |            90.9% |
+| Medium (4)  |          94.0%  |            58.4% |
+| Hard (10)   |          94.8%  |            19.9% |
+
+**Per-service breakdown:**
+
+| Scope      |  n | mean Opus | mean Haiku | median Haiku | Haiku min | Haiku max |
+| :--------- | -: | --------: | ---------: | -----------: | --------: | --------: |
+| S3         | 10 |    0.9275 |     0.4477 |       0.5052 |    0.1757 |    0.7544 |
+| DynamoDB   | 10 |    0.9839 |     0.5299 |       0.5185 |    0.0000 |    0.9762 |
+| **Total**  | 20 |    0.9557 |     0.4888 |       0.5052 |    0.0000 |    0.9762 |
+
+With 20 tasks across three tiers, these are an average tendency on a small, curated sample rather
+than a precise law.
+
+In contrast, inference cost stays close to flat across tiers, with the Medium tier the priciest
+for both models — the harder tasks are not proportionally more expensive because the smaller
+model's rollouts fail fast and the stronger model saturates on iteration count regardless of tier.
+
+![Mean agent cost per run by difficulty tier](assets/cost_by_tier.png)
+
+## Analysis
+
+Raiden asks a different question than issue-resolution benchmarks. SWE-bench-style tasks measure
+whether a model can localize and patch an existing codebase; Raiden measures whether it can build
+a real stateful CLI from a prose spec, containerized, with the grader hidden. The two AWS surfaces
+(S3 REST + XML and DynamoDB-JSON with condition-expression / key-condition grammar) are
+non-trivial to reproduce end-to-end, so the reward reflects genuine implementation rather than
+recall. Because the harness never shows the tests to the model, a policy cannot overfit the
+grader; it must satisfy the underlying service semantics.
+
+Capability separation on this sample is large: mean Opus 4.8 reward is **0.9557**, mean Haiku 4.5
+reward is **0.4888**, for a **Δmean of +0.4669**. Opus 4.8 saturates the sample (all 20 tasks land
+in the Easy band, mean reward ≥ 0.94 in every tier), while Haiku 4.5 spreads across tiers with a
+clean gradient (Easy 0.91 · Medium 0.58 · Hard 0.20). The Hard tier compresses `pass@1` (Opus 20%
+vs Haiku 0%) but preserves the difference at the mean-reward level (Opus 0.948 vs Haiku 0.199),
+which is exactly what a continuous reward is for: it stays informative where a binary pass metric
+would call both models identical.
+
+The `pass@1` figure alone would flatten the picture. Haiku scores exactly `1.0` on **zero** of 20
+tasks (its pass@1 is 0.0% overall), yet its mean reward is 0.49; that partial-progress mass is
+what an RL signal needs. Opus scores exactly `1.0` on 6 of 20 (30.0% pass@1), so its remaining
+headroom is also visible without any tie-breaking. If we had only used `pass@1`, we would have
+called Haiku a floor model on both S3 and DynamoDB; the fractional reward instead shows Haiku
+already clearing >90% of the Easy tier and getting nothing on 2 of 10 hard tasks (Haiku ≤ 0.11,
+including one exact zero on `c6589969` where Opus scores 1.0).
+
+DynamoDB is easier for both models than S3 (mean Opus 0.98 vs 0.93; mean Haiku 0.53 vs 0.45),
+which is consistent with the reward-granularity design: the DynamoDB task suites have more tests
+per task (avg 95 vs 63), so per-test weight is smaller and small implementation errors move the
+score less. On both surfaces, the largest per-task gaps cluster on the Hard-for-Haiku tasks and
+carry the RL-training signal.
+
+Cost complements these results: Opus 4.8 spends roughly **2× more per run** than Haiku 4.5
+(mean $1.49 vs $0.69 across the sample) for its **+0.47 reward advantage**. The Medium tier is
+the priciest for both models ($1.72 Opus / $0.67 Haiku); the Hard tier is not proportionally more
+expensive because Haiku's rollouts fail fast on tasks it cannot solve and Opus saturates on
+iteration budget regardless of task difficulty. On a cost-per-point-of-reward basis, Opus is the
+more efficient choice for Medium and Hard tiers where Haiku's rewards collapse, while Haiku is
+competitive on Easy tasks where both models land near the ceiling.
+
+These separations are trustworthy only because the grading harness cannot be gamed: the agent
+never sees `tests/` or `solution/`, every container pins ~30 external hostnames to `0.0.0.0`, a
+`socket.connect` guard raises on any non-loopback / non-private connect, and `test.sh` always
+exits `0` so the exit code cannot be used as a signaling channel. A model's reward reflects the
+CLI it built, not an answer it fetched from the network.
+
+## Coverage
+
+The sample covers **2 service surfaces** and **15 unique AWS CLI commands** (7 S3 + 8 DynamoDB).
+Each task implements a **subset** of its surface's full command set; per-task subset sizes and
+the number of tests they generate are what drive the reward-granularity design.
+
+| Service     | Tasks | Commands covered                                                                | Command subset sizes           |     Tests |
+| :---------- | ----: | :------------------------------------------------------------------------------ | :----------------------------- | --------: |
+| `aws s3`    |    10 | `mb, rb, cp, ls, mv, rm, sync` (7)                                              | 5 (× 9),  7 (× 1)              |       626 |
+| `aws dynamodb` | 10 | `create-table, delete-item, delete-table, get-item, list-tables, put-item, query, update-item` (8) | 5 (× 2), 6 (× 4), 7 (× 2), 8 (× 2) |       951 |
+| **Total**   |    20 | **15 unique CLI commands** across 2 surfaces                                     |                                |     1,577 |
+
+**Per-command task frequency** (how many tasks include each command in their subset):
+
+| Command (S3) | Tasks || Command (DynamoDB) | Tasks |
+| :----------- | ----: |:-|:------------------ | ----: |
+| `cp`         |    9  || `delete-item`      |   10  |
+| `sync`       |    9  || `get-item`         |   10  |
+| `mb`         |    8  || `list-tables`      |   10  |
+| `mv`         |    8  || `delete-table`     |    8  |
+| `rm`         |    7  || `query`            |    8  |
+| `ls`         |    6  || `update-item`      |    8  |
+| `rb`         |    5  || `create-table`     |    5  |
+|              |       || `put-item`         |    5  |
+
+![Opus 4.8 vs Haiku 4.5 on 20 AWS CLI tasks — sorted by Haiku reward ascending; longer dumbbell = more RL-training headroom](assets/opus_vs_haiku.png)
+
+## Dataset structure
+
+Each task lives under `dataset/<uuid>/` and is fully self-contained:
+
+```
+dataset/<uuid>/
+├── task.toml                 # metadata (keywords, commands, tests_shipped, image digest, runtime)
+├── instruction.md            # the prompt presented to the agent
+├── environment/
+│   ├── Dockerfile            # builds the task image on the pinned per-scope base
+│   └── docker-compose.yaml   # boots the simulation-backend sidecar (MinIO or DynamoDB Local)
+├── solution/
+│   ├── reference.diff        # the reference oracle patch
+│   ├── golden.diff           # an alternative golden patch (preferred by solve.sh)
+│   └── solve.sh              # applies the selected patch and wires up submission/aws
+└── tests/
+    ├── __init__.py           # marks tests/ as a package for pytest collection
+    ├── _s3_http.py / _ddb_http.py  # stdlib-only wire-protocol client for the fixtures
+    ├── conftest.py           # anti-NOP guard, `cli` fixture, autouse backend-reset fixture
+    ├── test.sh               # verifier entrypoint: runs pytest, writes reward.txt
+    └── test_<...>.py         # per-command and cross-command E2E tests (hidden from the agent)
 ```
 
-Within each delivery, all tasks share the same `metadata.image.uri`
-and the same `environment.docker_image` `sha256` digest, the task
-image is identical across the delivery; what varies between tasks is
-`instruction.md`, `tests/`, `solution/`, the command subset, the
-per-class behaviour-tag counts, and `tests_shipped`.
+During a run the agent sees only the built container filesystem and `instruction.md`.
+`solution/` and `tests/` are used exclusively by the verifier and are never mounted into the
+agent's environment. The submission is language-agnostic: whatever the agent places at
+`/workspace/submission/aws` (native binary, shebang-scripted file, or wrapper dispatching
+underneath) is invoked by the harness as `aws <cli> <command> ...`.
 
----
+## Trajectory structure
 
-## Reproducing a single task locally
+Each run lives under `trajectories/<uuid>/<model>/run_N/`:
 
-Every task ships with a self-contained `docker-compose.yaml` that
-boots the simulation backend as a sidecar. The reproduce recipe is
-identical for S3 and DynamoDB tasks, only the task UUID differs:
+```
+trajectories/<uuid>/<model>/run_N/       # model ∈ {claude-opus-4-8, claude-haiku-4-5}; N ∈ {1}
+├── result.json               # config, agent metrics, verifier reward + diagnostics
+├── config.json               # the run configuration (agent, environment, verifier, timeouts)
+├── agent/
+│   ├── trajectory.json       # structured step-by-step trace of the agent's tool calls
+│   ├── openhands_sdk.txt     # agent SDK stdout log
+│   └── run_agent.py          # entry-point script the harness invoked
+├── verifier/
+│   ├── results.xml           # pytest JUnit XML report (per-test outcomes)
+│   ├── reward.txt            # bare scalar reward as written by test.sh
+│   └── test-stdout.txt       # captured pytest stdout
+└── artifacts/
+    └── manifest.json         # artifact manifest for the run
+```
+
+Key `result.json` fields: `verifier_result.rewards.reward` (continuous reward ∈ [0, 1]),
+`verifier_result.status`, `agent_result` (token usage, iterations, episodes), and
+`config.agent.model_name` (authoritative model id, e.g. `anthropic/claude-haiku-4-5`,
+`anthropic/claude-opus-4-8`). The `task_checksum` at the top of each `result.json` fingerprints
+the task directory content the run graded against, so the run is bound to a specific frozen task
+version.
+
+## Scoring methodology
+
+```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#2b3352','primaryTextColor':'#ffffff','primaryBorderColor':'#7a99d1','lineColor':'#7a99d1','fontFamily':'DM Sans, Roboto, Segoe UI, sans-serif'}}}%%
+flowchart LR
+  A["Task<br/>instruction.md + Docker env"] --> B["Agent<br/>writes /workspace/submission/aws"]
+  B --> C["Verifier<br/>pytest against hidden tests"]
+  C --> D["Reward<br/>passed / (passed + failures + errors)"]
+  D --> E{"Pass?<br/>reward == 1.0"}
+  classDef sealed fill:#2b3352,stroke:#ee00ee,color:#ffffff;
+  classDef node fill:#2b3352,stroke:#ee00ee,color:#ffffff;
+  classDef gate fill:#3a4360,stroke:#ee00ee,color:#ffffff;
+  class A,B,D node;
+  class C sealed;
+  class E gate;
+```
+
+The verifier (`tests/test.sh`) computes one scalar reward per run:
+
+```
+reward = round(passed / (passed + failures + errors), 4)
+```
+
+- **Numerator:** number of pytest cases that pass on the agent's submission.
+- **Denominator:** `passed + failures + errors`. `skipped` / `xfail` / `deselected` are excluded
+  by design so they neither help nor hurt.
+- **Anti-NOP guard.** `tests/conftest.py::pytest_configure` calls `pytest.exit(returncode=1, …)`
+  before any test collects if `/workspace/submission/aws` is absent or non-executable. No JUnit
+  XML is emitted, so the parser in `test.sh` writes `reward = 0.0`. An empty `exit 0` stub also
+  fails: the `error-invalid-args` behaviour class asserts `returncode != 0` on documented error
+  paths, so a NOP submission still hits the floor.
+- **Ceiling.** Every task ships a reference solution at `solution/reference.diff` that passes the
+  full suite by construction, so `reward = 1.0` is attainable.
+- **Deterministic grading.** pytest runs with `-p no:randomly`, `PYTHONHASHSEED=0`, `TZ=UTC`,
+  `LC_ALL=C.UTF-8`, and an autouse fixture wipes simulation-backend state before and after every
+  test. `test.sh` always exits `0`, regardless of pass/fail count, so the reward file is the
+  grading channel, not the exit code.
+
+Throughout this document, `pass@1` is the fraction of a model's runs where `reward == 1.0`. The
+verifier is offline by construction: every image pins ~30 external hostnames (package indexes,
+GitHub, AWS endpoints) to `0.0.0.0`, and a `socket.connect` guard in `conftest.py` raises on any
+non-loopback / non-private connect, so a submission cannot reach a real service or fetch its own
+oracle patch.
+
+## Reproduction
+
+Image-building, agent execution, and scoring are orchestrated by the **Harbor 0.13.1** harness.
+The reward and full diagnostics for every run are already in
+`trajectories/<uuid>/<model>/run_N/result.json`.
+
+### Recompute the mean rewards yourself
+
+No trajectory re-execution is needed. Read the shipped rewards directly:
+
+```python
+import json, glob, collections
+by_model = collections.defaultdict(list)
+for rd in glob.glob("trajectories/*/*/run_*/result.json"):
+    r = json.load(open(rd))
+    model = rd.split("/")[2]                # claude-opus-4-8 | claude-haiku-4-5
+    by_model[model].append(float(r["verifier_result"]["rewards"]["reward"]))
+for m, xs in sorted(by_model.items()):
+    at1 = sum(1 for x in xs if x == 1.0) / len(xs)
+    print(f"{m:22s} n={len(xs):2d}  mean={sum(xs)/len(xs):.4f}  pass@1={at1:.4f}")
+# -> claude-haiku-4-5      n=20  mean=0.4888  pass@1=0.0000
+# -> claude-opus-4-8       n=20  mean=0.9557  pass@1=0.3000
+```
+
+### Regenerate the charts
+
+All three charts in this document (`assets/opus_vs_haiku.png`, `assets/reward_by_tier.png`,
+`assets/cost_by_tier.png`) are generated from the shipped `dataset/` and `trajectories/`:
 
 ```bash
-UUID=<task-uuid>              # pick any of the 40 UUIDs under dataset/
+python3 make_plot.py                 # writes all three charts under assets/
+python3 make_plot.py out.png         # or write only the dumbbell chart to a custom path
+```
+
+### Re-run a single task in Docker
+
+Every task ships a self-contained `docker-compose.yaml` that boots the simulation backend as a
+sidecar. The recipe is identical for S3 and DynamoDB tasks; only the task UUID differs:
+
+```bash
+UUID=<task-uuid>                     # pick any of the 20 UUIDs under dataset/
 TASK="dataset/$UUID"
 
-# 1. Build the image from the per-task Dockerfile (requires IAM access
-#    to the base image in ECR, or substitute an equivalent local base).
-#    Tag it `raiden-main` so the compose override below picks it up.
+# 1. Build the image from the per-task Dockerfile (requires IAM access to the base image in ECR,
+#    or substitute an equivalent local base). Tag it raiden-main so the override below picks it up.
 docker build -t raiden-main "$TASK/environment/"
 
-# 2. Bring up the sidecar + main container via compose, bind-mounting
-#    the task directory at /task so the in-container script paths
-#    resolve. The shipped `main:` service is intentionally minimal;
-#    provide image + working_dir + volumes as an override on stdin.
+# 2. Bring up the sidecar + main container via compose, bind-mounting the task dir at /task.
 docker compose \
   -f "$TASK/environment/docker-compose.yaml" \
   -f <(cat <<'YAML'
@@ -712,136 +402,55 @@ YAML
 # (Replace TASK_DIR / LOGS_DIR with real absolute paths before you run.)
 ```
 
-`solve.sh` prefers `golden.diff`, falls back to `reference.diff`
-(controlled by `SOLVE_PATCH=golden|reference|auto`). Substitute the
-agent's submission for `solve.sh` to grade an alternative
-implementation; the container is implementation-agnostic and only
-requires an `aws` executable on `$PATH`.
+`solve.sh` prefers `golden.diff`, falls back to `reference.diff` (controlled by
+`SOLVE_PATCH=golden|reference|auto`). Substitute the agent's submission for `solve.sh` to grade
+an alternative implementation; the container is implementation-agnostic and only requires an
+`aws` executable on `$PATH`.
 
----
+## Verification and quality assurance
 
-## Reproducibility & provenance
+This sample passed a QC gate prior to delivery:
 
-**What is fully reproducible.** *Grading* is deterministic and
-offline by construction on both deliveries: the simulation backend
-(MinIO for S3, DynamoDB Local `sha256`-pinned for DynamoDB) runs
-either in-container or as a compose sidecar, an autouse fixture
-resets state before and after every test, `pytest` runs with
-randomization disabled (`-p no:randomly`), and `PYTHONHASHSEED=0` /
-`TZ=UTC` / `LC_ALL=C.UTF-8` are baked into every image. Given the
-same submission and the same built image, the reward is reproducible
-to the digit.
+- **Structure.** 20 dataset directories and 20 trajectory directories per model, matched 1:1 by
+  UUID; required files present and non-empty in every task and every run; the full 2 × 1 grid
+  (40 runs) is complete; each `result.json` links back to its `task_checksum`.
+- **Reward integrity.** Every reward is read directly from a `result.json` and matches
+  `passed / (passed + failures + errors)` computed from the JUnit XML the same `test.sh` writes;
+  `config.agent.model_name` matches the trajectory's model directory.
+- **Discriminative reward.** Every task ships a reference solution
+  (`solution/reference.diff`) that scores exactly 1.0 on the shipped suite (ceiling attainable),
+  and every task's `task.toml` carries `discriminative = true`. A naive empty / missing /
+  non-executable stub scores exactly 0.0 (floor guaranteed by the anti-NOP guard), so the reward
+  is strictly bounded and non-trivial for both extremes.
+- **Reward-hacking resistance.** The agent is never shown `tests/` or `solution/`. Each container
+  pins ~30 external hostnames (`pypi.org`, `github.com`, `s3.amazonaws.com`,
+  `dynamodb.amazonaws.com`, package mirrors, cloud CLIs, …) to `0.0.0.0` at the container level;
+  `tests/conftest.py` installs a `socket.connect` guard that raises on any non-loopback /
+  non-private connect. **No run could have obtained its oracle from the network.**
+- **Fair play.** The agent's process is `openhands-sdk v1.12.0` under `harbor 0.13.1` with
+  `n_attempts=1` (pass@1), `n_concurrent_trials=4`, `max_iterations=1000`,
+  `force_adaptive_thinking=true`, `LLM_REASONING_EFFORT=high`. The grading harness is byte-for-byte
+  the shipped `tests/test.sh` on the `sha256`-pinned per-scope image; the same one every training
+  consumer sees.
+- **Hermetic execution.** No real AWS, no internet, no flaky time-dependent paths. `PYTHONHASHSEED=0`,
+  `TZ=UTC`, `LC_ALL=C.UTF-8` are baked into every image. The DynamoDB Local sidecar is pinned by
+  `sha256` (`amazon/dynamodb-local:2.5.4@sha256:cf8cebd061f988628c02daff10fdb950a54478feff9c52f6ddf84710fe3c3906`)
+  and runs `-inMemory -sharedDb -port 8000`. The S3 backend is `MinIO` spawned session-scoped from
+  `conftest.py`. An autouse fixture wipes backend state before and after every test.
+- **Limitations.**
+  - **Sample size.** 20 tasks (6 Easy, 4 Medium, 10 Hard) with 1 run per model; per-tier and
+    per-service breakdowns are averages on small n with real run-to-run variance, not precise
+    estimates.
+  - **Two-model calibration.** The tier boundaries are anchored on a single mid-tier calibration
+    model (Haiku 4.5); a different weaker model may reassign a task's tier by a few points.
+  - **Contamination.** The `aws s3` and `aws dynamodb` CLIs are public; whether a specific
+    subset appeared in a model's training data is unknown, so mean reward is not a
+    contamination-free measure of difficulty.
+  - **Model nondeterminism.** Even at `pass@1`, temperature and internal reasoning traces produce
+    per-run variance not captured by a single trial.
 
-**What is build-time reproducible.** Three pins keep each image build
-stable:
-
-- The base image the per-task `environment/Dockerfile` builds `FROM`
-  and the final task image the runner pulls (recorded in
-  `task.toml[environment].docker_image`) are pinned to the same
-  `sha256` digest per delivery. Pulling requires IAM access to the
-  private ECR repo, but a successful pull is bit-for-bit identical.
-- The simulation-backend sidecar is pinned: DynamoDB Local by
-  `sha256` digest in `docker-compose.yaml`
-  (`amazon/dynamodb-local:2.5.4@sha256:cf8cebd061f988628c02daff10fdb950a54478feff9c52f6ddf84710fe3c3906`);
-  MinIO by the upstream release image spawned from `conftest.py`.
-- The agent SDK is installed from the immutable release tag
-  `github.com/Ethara-Ai/software-agent-sdk/archive/refs/tags/v1.12.0.tar.gz`
-  in every task Dockerfile.
-
-**Provenance.** Each task's in-container content is fingerprinted by
-the `task_checksum` (`sha256` of the task directory) computed at
-grade time, and the grading harness identity is `harbor 0.13.1`
-driving either the MinIO fixture (S3) or a DynamoDB Local sidecar
-(DynamoDB) on a compose network.
-
----
-
-## Versioning, licensing & citation
-
-**Versioning.** Two scoped pilot deliveries live in this repository:
-
-- **AWS CLI S3 pilot**, 10 tasks, generated over
-  `{mb, rb, cp, ls, mv, rm, sync}` command subsets.
-- **AWS CLI DynamoDB pilot**, 30 tasks, generated over
-  `{create-table, delete-item, delete-table, get-item, list-tables, put-item, query, update-item}`
-  command subsets.
-
-Task identity is the UUID directory name; the in-container task
-content is fingerprinted by the `task_checksum` (`sha256` of the
-task directory) computed at grade time. There is no semantic version
-tag on either delivery itself; cite it by the repository state (git
-commit) you received plus the relevant `task_checksum`.
-
-**Licensing.** This repository ships under the **MIT License** (see
-[`LICENSE`](./LICENSE), copyright Ethara.AI 2026). The MIT terms
-cover the contents of this repository, task specs, tests, reference
-solutions, and harness code. Note that the runtime containers are
-*built on* private base images and a third-party agent SDK
-(`Ethara-Ai/software-agent-sdk`), each governed by its own upstream
-terms; the MIT grant on this repository does not extend to those
+**Licensing.** MIT (see [`LICENSE`](./LICENSE), copyright Ethara.AI 2026). The MIT terms cover
+the contents of this repository (task specs, tests, reference solutions, harness code). The
+runtime containers are *built on* private base images and a third-party agent SDK
+(`Ethara-Ai/software-agent-sdk`); the MIT grant on this repository does not extend to those
 upstream artefacts.
-
-**Citation.** When reporting results computed against either
-delivery, identify (a) the delivery
-(`aws-cli-s3` or `aws-cli-dynamodb`), (b) the exact task content
-(`task_checksum` per task), and (c) the grading harness
-(`harbor 0.13.1`, plus the simulation-backend sidecar), plus the
-model and scaffold you ran against them.
-
----
-
-## Design notes
-
-1. **Dependency scope.** In DynamoDB, the submission's only pinned
-   dependency in `task.toml` is `pytest` (for the test harness
-   itself); the DynamoDB client used by the fixtures is a
-   stdlib-only raw-HTTP client (`tests/_ddb_http.py`) that speaks the
-   DynamoDB JSON wire protocol directly, no `boto3` / `botocore` /
-   `moto` in the loop. S3 adds `minio==7.2.15` to `pinned_deps` for
-   the session-scoped MinIO server; the S3 wire client in
-   `tests/_s3_http.py` is likewise stdlib-only. In both deliveries
-   the submission is graded on observable behaviour (stdout, stderr,
-   exit code, resulting bucket / object / table / item state), so the
-   feature signal comes from what the CLI does, not from which
-   libraries it links against.
-2. **Real service vs. in-process mocks.** In both deliveries the
-   simulation is a *real* service:
-   - **S3:** [MinIO](https://min.io/), an S3-compatible server, run
-     session-scoped from `conftest.py`.
-   - **DynamoDB:**
-     [`amazon/dynamodb-local`](https://hub.docker.com/r/amazon/dynamodb-local),
-     run as a compose sidecar (`ddb: amazon/dynamodb-local:2.5.4`
-     with `-inMemory -sharedDb -port 8000`).
-   Both are injected into tests via the service-scoped `AWS_ENDPOINT_URL_*`
-   env vars (plus the catch-all `AWS_ENDPOINT_URL`); credentials are
-   the in-image `raidentest` / `raidentest` pair; an autouse fixture
-   wipes state before and after each test so state never leaks
-   across cases. Running against real S3-compatible / DynamoDB-Local
-   servers (rather than in-process mocks) gives us production-shaped
-   status codes, wire-formatted error bodies
-   (`ValidationException`, `ResourceNotFoundException`,
-   `ConditionalCheckFailedException`, XML `Error` responses on S3,
-   …), and multi-command state consistency, at the cost of a
-   compose / server startup and a per-test reset, both dominated by
-   the pytest run itself. Each `docker-compose.yaml` further
-   guarantees offline execution by pinning common package, git, and
-   AWS hosts to `0.0.0.0` at the network layer, and the conftest
-   installs a `socket.connect` guard that raises on any
-   non-loopback / non-private connect, so the container never reaches
-   out beyond loopback.
-3. **Scaling to more environments.** The per-task footprint
-   (`instruction.md` + `environment/{Dockerfile, docker-compose.yaml}` +
-   `tests/` + `solution/{reference.diff, golden.diff, solve.sh}` +
-   `task.toml`) is uniform across all 40 tasks in both deliveries,
-   generated from a single parametrized recipe over command subsets
-  , the shared per-delivery ECR image is the concrete artifact of
-   that recipe. The same pipeline generalizes to further CLI
-   surfaces by swapping (a) the spec template, (b) the simulation
-   backend, and (c) the test family, the Harbor envelope, grader,
-   and runner contract stay invariant. Concretely: producing another
-   30+ environments for a new service family is a matter of
-   authoring the simulation backend and one parameterized test
-   family per command, then reusing the rest of the pipeline. The
-   S3 → DynamoDB step already exercised this: the S3 delivery was
-   the pilot and the DynamoDB delivery was a 3× larger sweep
-   produced from the same recipe.
