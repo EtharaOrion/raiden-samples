@@ -39,7 +39,7 @@ The per-task reward gap between the two models grows sharply as task difficulty 
 stays near the ceiling on every task while Haiku 4.5 spreads across the full `[0, 1]` range. See
 [Results](#results-reward-vs-model-capability) for the tier-level breakdown.
 
-![Per-task reward for Opus 4.8 vs Haiku 4.5 — sorted by Haiku reward ascending; longer dumbbell = more RL-training headroom](assets/opus_vs_haiku.png)
+![Per-task reward for Opus 4.8 vs Haiku 4.5; sorted by Haiku reward ascending; longer dumbbell = more RL-training headroom](assets/opus_vs_haiku.png)
 
 > **This is a representative, quality-controlled sample of the full Raiden corpus,** provided for
 > evaluation. The task format ([Harbor 0.13.1](https://github.com/harbor-framework/harbor)),
@@ -110,7 +110,7 @@ rather than any property fixed in advance.
 
 Thresholds (fixed): **Easy ≥ 0.75**, **Medium 0.50–0.75**, **Hard < 0.50**.
 
-![Mean reward by difficulty tier — Opus 4.8 stays near the ceiling while Haiku 4.5 spreads across the tiers](assets/reward_by_tier.png)
+![Mean reward by difficulty tier; Opus 4.8 stays near the ceiling while Haiku 4.5 spreads across the tiers](assets/reward_by_tier.png)
 
 | Tier       |   n | mean Haiku reward | mean Opus reward |
 | :--------- | --: | ----------------: | ---------------: |
@@ -154,7 +154,7 @@ With 20 tasks across three tiers, these are an average tendency on a small, cura
 than a precise law.
 
 In contrast, inference cost stays close to flat across tiers, with the Medium tier the priciest
-for both models — the harder tasks are not proportionally more expensive because the smaller
+for both models; the harder tasks are not proportionally more expensive because the smaller
 model's rollouts fail fast and the stronger model saturates on iteration count regardless of tier.
 
 ![Mean agent cost per run by difficulty tier](assets/cost_by_tier.png)
