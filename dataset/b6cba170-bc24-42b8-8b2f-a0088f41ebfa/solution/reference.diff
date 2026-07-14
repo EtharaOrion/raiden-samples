@@ -1,0 +1,325 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,319 @@
++import sys
++import os
++import json
++import base64
++import urllib.request
++import urllib.error
++
++USAGE_EXIT = 252
++SERVICE_EXIT = 254
++
++# Flag specifications per subcommand.
++# Each entry: flag -> (field_name, kind)
++# kind: "str", "int", "bool", "json"
++SPECS = {
++    "create-table": {
++        "--attribute-definitions": ("AttributeDefinitions", "json_or_shorthand_list"),
++        "--billing-mode": ("BillingMode", "str"),
++        "--deletion-protection-enabled": ("DeletionProtectionEnabled", "bool"),
++        "--global-secondary-indexes": ("GlobalSecondaryIndexes", "json"),
++        "--global-table-settings-replication-mode": ("GlobalTableSettingsReplicationMode", "str"),
++        "--global-table-source-arn": ("GlobalTableSourceArn", "str"),
++        "--key-schema": ("KeySchema", "json_or_shorthand_list"),
++        "--local-secondary-indexes": ("LocalSecondaryIndexes", "json"),
++        "--on-demand-throughput": ("OnDemandThroughput", "json_or_shorthand"),
++        "--provisioned-throughput": ("ProvisionedThroughput", "json_or_shorthand"),
++        "--resource-policy": ("ResourcePolicy", "str"),
++        "--sse-specification": ("SSESpecification", "json_or_shorthand"),
++        "--stream-specification": ("StreamSpecification", "json_or_shorthand"),
++        "--table-class": ("TableClass", "str"),
++        "--table-name": ("TableName", "str"),
++        "--tags": ("Tags", "json"),
++        "--warm-throughput": ("WarmThroughput", "json_or_shorthand"),
++    },
++    "delete-item": {
++        "--condition-expression": ("ConditionExpression", "str"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--expected": ("Expected", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--key": ("Key", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++        "--return-values": ("ReturnValues", "str"),
++        "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++    "get-item": {
++        "--attributes-to-get": ("AttributesToGet", "json_or_list"),
++        "--consistent-read": ("ConsistentRead", "bool"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--key": ("Key", "json"),
++        "--projection-expression": ("ProjectionExpression", "str"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++    "list-tables": {
++        "--exclusive-start-table-name": ("ExclusiveStartTableName", "str"),
++        "--limit": ("Limit", "int"),
++    },
++    "put-item": {
++        "--condition-expression": ("ConditionExpression", "str"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--expected": ("Expected", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--item": ("Item", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++        "--return-values": ("ReturnValues", "str"),
++        "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++    "query": {
++        "--attributes-to-get": ("AttributesToGet", "json_or_list"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--consistent-read": ("ConsistentRead", "bool"),
++        "--exclusive-start-key": ("ExclusiveStartKey", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--filter-expression": ("FilterExpression", "str"),
++        "--index-name": ("IndexName", "str"),
++        "--key-condition-expression": ("KeyConditionExpression", "str"),
++        "--key-conditions": ("KeyConditions", "json"),
++        "--limit": ("Limit", "int"),
++        "--projection-expression": ("ProjectionExpression", "str"),
++        "--query-filter": ("QueryFilter", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--scan-index-forward": ("ScanIndexForward", "bool"),
++        "--select": ("Select", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++    "update-item": {
++        "--attribute-updates": ("AttributeUpdates", "json"),
++        "--condition-expression": ("ConditionExpression", "str"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--expected": ("Expected", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--key": ("Key", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++        "--return-values": ("ReturnValues", "str"),
++        "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++        "--table-name": ("TableName", "str"),
++        "--update-expression": ("UpdateExpression", "str"),
++    },
++}
++
++OP_NAMES = {
++    "create-table": "CreateTable",
++    "delete-item": "DeleteItem",
++    "get-item": "GetItem",
++    "list-tables": "ListTables",
++    "put-item": "PutItem",
++    "query": "Query",
++    "update-item": "UpdateItem",
++}
++
++# Flags that require a value.
++NO_VALUE_KINDS = ("bool",)
++
++
++def usage_error(msg):
++    sys.stderr.write("usage error: " + msg + "\n")
++    sys.exit(USAGE_EXIT)
++
++
++def parse_shorthand(s):
++    # e.g. AttributeName=pk,KeyType=HASH -> {"AttributeName":"pk","KeyType":"HASH"}
++    out = {}
++    for pair in s.split(","):
++        if "=" not in pair:
++            raise ValueError("bad shorthand: " + pair)
++        k, v = pair.split("=", 1)
++        # Attempt numeric conversion for capacity units.
++        if v.isdigit():
++            out[k] = int(v)
++        elif v in ("true", "false"):
++            out[k] = (v == "true")
++        else:
++            out[k] = v
++    return out
++
++
++def coerce_value(flag, kind, values):
++    if kind == "bool":
++        return True
++    if not values:
++        usage_error("argument " + flag + ": expected one argument")
++    if kind == "str":
++        return values[0]
++    if kind == "int":
++        try:
++            return int(values[0])
++        except ValueError:
++            usage_error("argument " + flag + ": invalid int value: " + values[0])
++    if kind == "json":
++        try:
++            return json.loads(values[0])
++        except Exception:
++            usage_error("argument " + flag + ": invalid JSON")
++    if kind == "json_or_list":
++        try:
++            return json.loads(values[0])
++        except Exception:
++            return list(values)
++    if kind == "json_or_shorthand":
++        v = values[0]
++        try:
++            return json.loads(v)
++        except Exception:
++            try:
++                return parse_shorthand(v)
++            except Exception:
++                usage_error("argument " + flag + ": invalid value")
++    if kind == "json_or_shorthand_list":
++        # multiple values, each shorthand OR a single json blob
++        if len(values) == 1:
++            try:
++                return json.loads(values[0])
++            except Exception:
++                pass
++        out = []
++        for v in values:
++            try:
++                out.append(parse_shorthand(v))
++            except Exception:
++                usage_error("argument " + flag + ": invalid value")
++        return out
++    usage_error("internal: unknown kind")
++
++
++def parse_args(subcmd, args):
++    spec = SPECS[subcmd]
++    request = {}
++    seen = set()
++    i = 0
++    n = len(args)
++    while i < n:
++        tok = args[i]
++        if not tok.startswith("--"):
++            usage_error("unexpected positional argument: " + tok)
++        # support --flag=value
++        if "=" in tok:
++            flag, inlineval = tok.split("=", 1)
++            has_inline = True
++        else:
++            flag = tok
++            inlineval = None
++            has_inline = False
++        if flag not in spec:
++            usage_error("unknown flag: " + flag)
++        field, kind = spec[flag]
++        if flag in seen:
++            usage_error("argument " + flag + ": duplicated")
++        seen.add(flag)
++        if kind == "bool":
++            if has_inline:
++                request[field] = (inlineval == "true")
++            else:
++                request[field] = True
++            i += 1
++            continue
++        # collect values
++        values = []
++        if has_inline:
++            values.append(inlineval)
++            i += 1
++        else:
++            i += 1
++            # gather following non-flag tokens for list kinds; single otherwise
++            if kind in ("json_or_shorthand_list", "json_or_list"):
++                while i < n and not args[i].startswith("--"):
++                    values.append(args[i])
++                    i += 1
++            else:
++                if i < n and not args[i].startswith("--"):
++                    values.append(args[i])
++                    i += 1
++                else:
++                    usage_error("argument " + flag + ": expected one argument")
++        request[field] = coerce_value(flag, kind, values)
++    return request
++
++
++def get_endpoint():
++    ep = os.environ.get("AWS_ENDPOINT_URL_DYNAMODB") or os.environ.get("AWS_ENDPOINT_URL")
++    if not ep:
++        sys.stderr.write("No endpoint configured\n")
++        sys.exit(SERVICE_EXIT)
++    return ep
++
++
++def call(op, payload):
++    endpoint = get_endpoint()
++    data = json.dumps(payload).encode("utf-8")
++    req = urllib.request.Request(endpoint, data=data, method="POST")
++    req.add_header("Content-Type", "application/x-amz-json-1.0")
++    req.add_header("X-Amz-Target", "DynamoDB_20120810." + op)
++    req.add_header("Authorization",
++                   "AWS4-HMAC-SHA256 Credential=dummy/20120810/us-east-1/dynamodb/aws4_request, "
++                   "SignedHeaders=content-type;host;x-amz-target, Signature=dummy")
++    try:
++        resp = urllib.request.urlopen(req)
++        body = resp.read().decode("utf-8")
++        if body:
++            return json.loads(body)
++        return {}
++    except urllib.error.HTTPError as e:
++        raw = e.read().decode("utf-8")
++        code = "UnknownError"
++        message = raw
++        try:
++            parsed = json.loads(raw)
++            typ = parsed.get("__type", "") or parsed.get("code", "")
++            if typ:
++                code = typ.split("#")[-1]
++            message = parsed.get("message", parsed.get("Message", raw))
++        except Exception:
++            pass
++        sys.stderr.write(code + ": " + str(message) + "\n")
++        sys.exit(SERVICE_EXIT)
++    except urllib.error.URLError as e:
++        sys.stderr.write("ConnectionError: " + str(e) + "\n")
++        sys.exit(SERVICE_EXIT)
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3:
++        usage_error("missing command")
++    # argv[1] is prefix (e.g. dynamodb), argv[2] is subcommand
++    subcmd = argv[2]
++    if subcmd not in SPECS:
++        usage_error("unknown subcommand: " + subcmd)
++    args = argv[3:]
++    request = parse_args(subcmd, args)
++    op = OP_NAMES[subcmd]
++
++    if subcmd == "create-table":
++        result = call(op, request)
++        # follow-up DescribeTable when throughput/keys given (mirror expected calls)
++        if "AttributeDefinitions" in request or "KeySchema" in request or "BillingMode" in request:
++            tn = request.get("TableName")
++            if tn:
++                try:
++                    call("DescribeTable", {"TableName": tn})
++                except SystemExit:
++                    raise
++        print(json.dumps(result, indent=4))
++        sys.exit(0)
++
++    result = call(op, request)
++    print(json.dumps(result, indent=4))
++    sys.exit(0)
++
++
++if __name__ == "__main__":
++    main()

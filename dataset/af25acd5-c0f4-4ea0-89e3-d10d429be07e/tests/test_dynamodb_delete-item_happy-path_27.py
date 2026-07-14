@@ -1,0 +1,25 @@
+from _ddb_http import to_item, from_item, to_av, from_av
+
+
+def test_delete_item_removes_item(cli, ddb_client):
+    ddb_client.create_table(
+        TableName="Tbl1",
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        ProvisionedThroughput={"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
+    )
+    ddb_client.put_item(
+        TableName="Tbl1",
+        Item={"pk": {"S": "abc"}, "n": {"N": "5"}},
+    )
+    assert ddb_client.get_item(TableName="Tbl1", Key={"pk": {"S": "abc"}}).get("Item")
+
+    result = cli(
+        "dynamodb", "delete-item",
+        "--table-name", "Tbl1",
+        "--key", '{"pk":{"S":"abc"}}',
+    )
+    assert result.returncode == 0
+
+    resp = ddb_client.get_item(TableName="Tbl1", Key={"pk": {"S": "abc"}})
+    assert resp.get("Item") is None

@@ -1,0 +1,214 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,208 @@
++import sys
++import os
++import json
++import base64
++import urllib.request
++import urllib.error
++
++TARGET_PREFIX = "DynamoDB_20120810."
++
++# Flag definitions per subcommand: kebab-flag -> (FieldName, type)
++# type: "str", "json", "int", "bool"
++SUBCOMMANDS = {
++    "delete-item": {
++        "--condition-expression": ("ConditionExpression", "str"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--expected": ("Expected", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--key": ("Key", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++        "--return-values": ("ReturnValues", "str"),
++        "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++    "delete-table": {
++        "--table-name": ("TableName", "str"),
++    },
++    "get-item": {
++        "--attributes-to-get": ("AttributesToGet", "json"),
++        "--consistent-read": ("ConsistentRead", "bool"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--key": ("Key", "json"),
++        "--projection-expression": ("ProjectionExpression", "str"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++    "list-tables": {
++        "--exclusive-start-table-name": ("ExclusiveStartTableName", "str"),
++        "--limit": ("Limit", "int"),
++    },
++    "put-item": {
++        "--condition-expression": ("ConditionExpression", "str"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--expected": ("Expected", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--item": ("Item", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++        "--return-values": ("ReturnValues", "str"),
++        "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++    "query": {
++        "--attributes-to-get": ("AttributesToGet", "json"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--consistent-read": ("ConsistentRead", "bool"),
++        "--exclusive-start-key": ("ExclusiveStartKey", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--filter-expression": ("FilterExpression", "str"),
++        "--index-name": ("IndexName", "str"),
++        "--key-condition-expression": ("KeyConditionExpression", "str"),
++        "--key-conditions": ("KeyConditions", "json"),
++        "--limit": ("Limit", "int"),
++        "--projection-expression": ("ProjectionExpression", "str"),
++        "--query-filter": ("QueryFilter", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--scan-index-forward": ("ScanIndexForward", "bool"),
++        "--select": ("Select", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++}
++
++OPERATIONS = {
++    "delete-item": "DeleteItem",
++    "delete-table": "DeleteTable",
++    "get-item": "GetItem",
++    "list-tables": "ListTables",
++    "put-item": "PutItem",
++    "query": "Query",
++}
++
++
++def usage_error(msg):
++    sys.stderr.write("usage error: " + msg + "\n")
++    sys.exit(252)
++
++
++def get_endpoint():
++    ep = os.environ.get("AWS_ENDPOINT_URL_DYNAMODB") or os.environ.get("AWS_ENDPOINT_URL")
++    if not ep:
++        usage_error("no endpoint configured")
++    return ep
++
++
++def call_dynamodb(operation, payload):
++    endpoint = get_endpoint()
++    data = json.dumps(payload).encode("utf-8")
++    req = urllib.request.Request(endpoint, data=data, method="POST")
++    req.add_header("Content-Type", "application/x-amz-json-1.0")
++    req.add_header("X-Amz-Target", TARGET_PREFIX + operation)
++    req.add_header("Authorization",
++                   "AWS4-HMAC-SHA256 Credential=dummy/20200101/us-east-1/dynamodb/aws4_request, "
++                   "SignedHeaders=content-type;host;x-amz-target, Signature=dummy")
++    req.add_header("X-Amz-Date", "20200101T000000Z")
++    try:
++        resp = urllib.request.urlopen(req)
++        body = resp.read().decode("utf-8")
++        if body:
++            return json.loads(body)
++        return {}
++    except urllib.error.HTTPError as e:
++        body = e.read().decode("utf-8")
++        code = "UnknownError"
++        message = body
++        try:
++            parsed = json.loads(body)
++            raw = parsed.get("__type", "") or parsed.get("code", "")
++            if raw:
++                code = raw.split("#")[-1]
++            message = parsed.get("message", parsed.get("Message", ""))
++        except Exception:
++            pass
++        sys.stderr.write("An error occurred (" + code + ") when calling the "
++                         + operation + " operation: " + str(message) + "\n")
++        sys.exit(254)
++    except urllib.error.URLError as e:
++        sys.stderr.write("Could not connect to the endpoint URL: " + str(e.reason) + "\n")
++        sys.exit(254)
++
++
++def parse_args(subcommand, args):
++    spec = SUBCOMMANDS[subcommand]
++    payload = {}
++    seen = set()
++    i = 0
++    n = len(args)
++    while i < n:
++        token = args[i]
++        if not token.startswith("--"):
++            usage_error("Unknown argument: " + token)
++        if token not in spec:
++            usage_error("Unknown option: " + token)
++        field, ftype = spec[token]
++        if token in seen:
++            usage_error("Duplicate option: " + token)
++        seen.add(token)
++        if ftype == "bool":
++            # boolean flag: may take an explicit value or be a store_true
++            if i + 1 < n and args[i + 1] in ("true", "false"):
++                val = args[i + 1] == "true"
++                i += 2
++            else:
++                val = True
++                i += 1
++            payload[field] = val
++            continue
++        # value-taking flag
++        if i + 1 >= n:
++            usage_error("Option " + token + " requires a value")
++        raw = args[i + 1]
++        i += 2
++        if ftype == "str":
++            if raw == "":
++                usage_error("Option " + token + " requires a non-empty value")
++            payload[field] = raw
++        elif ftype == "int":
++            try:
++                payload[field] = int(raw)
++            except ValueError:
++                usage_error("Option " + token + " requires an integer value")
++        elif ftype == "json":
++            try:
++                payload[field] = json.loads(raw)
++            except Exception:
++                usage_error("Option " + token + " requires valid JSON")
++    return payload
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3:
++        usage_error("insufficient arguments")
++
++    prefix = argv[1]
++    subcommand = argv[2]
++
++    if prefix != "dynamodb":
++        usage_error("unknown service: " + prefix)
++
++    if subcommand not in SUBCOMMANDS:
++        usage_error("unknown subcommand: " + subcommand)
++
++    args = argv[3:]
++    payload = parse_args(subcommand, args)
++
++    operation = OPERATIONS[subcommand]
++    result = call_dynamodb(operation, payload)
++
++    sys.stdout.write(json.dumps(result, indent=4))
++    sys.stdout.write("\n")
++    sys.exit(0)
++
++
++if __name__ == "__main__":
++    main()

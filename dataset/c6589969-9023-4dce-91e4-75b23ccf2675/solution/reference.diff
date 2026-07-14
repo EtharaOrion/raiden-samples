@@ -1,0 +1,251 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,245 @@
++import sys
++import os
++import json
++import urllib.request
++import urllib.error
++
++
++def endpoint():
++    return os.environ.get("AWS_ENDPOINT_URL_DYNAMODB") or os.environ["AWS_ENDPOINT_URL"]
++
++
++def call(op, payload):
++    data = json.dumps(payload).encode("utf-8")
++    req = urllib.request.Request(
++        endpoint(),
++        data=data,
++        headers={
++            "Content-Type": "application/x-amz-json-1.0",
++            "X-Amz-Target": "DynamoDB_20120810." + op,
++            "Authorization": (
++                "AWS4-HMAC-SHA256 Credential=dummy/20200101/us-east-1/dynamodb/aws4_request, "
++                "SignedHeaders=content-type;host;x-amz-target, Signature=dummy"
++            ),
++        },
++        method="POST",
++    )
++    try:
++        resp = urllib.request.urlopen(req)
++        body = resp.read().decode("utf-8")
++        return 200, json.loads(body) if body else {}
++    except urllib.error.HTTPError as e:
++        body = e.read().decode("utf-8")
++        try:
++            parsed = json.loads(body)
++        except Exception:
++            parsed = {"__type": "Unknown", "message": body}
++        return e.code, parsed
++
++
++def usage_error(msg):
++    sys.stderr.write("usage error: " + msg + "\n")
++    sys.exit(252)
++
++
++def service_error(parsed):
++    t = parsed.get("__type") or parsed.get("code") or "ServiceError"
++    code = t.split("#")[-1]
++    msg = parsed.get("message") or parsed.get("Message") or ""
++    sys.stderr.write(code + ": " + msg + "\n")
++    sys.exit(254)
++
++
++# subcommand -> {flag: (field, type)}
++# type: "str", "json", "int", "bool"
++SPECS = {
++    "delete-item": {
++        "--condition-expression": ("ConditionExpression", "str"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--expected": ("Expected", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--key": ("Key", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++        "--return-values": ("ReturnValues", "str"),
++        "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++    "delete-table": {
++        "--table-name": ("TableName", "str"),
++    },
++    "get-item": {
++        "--attributes-to-get": ("AttributesToGet", "json"),
++        "--consistent-read": ("ConsistentRead", "bool"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--key": ("Key", "json"),
++        "--projection-expression": ("ProjectionExpression", "str"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++    "list-tables": {
++        "--exclusive-start-table-name": ("ExclusiveStartTableName", "str"),
++        "--limit": ("Limit", "int"),
++    },
++    "put-item": {
++        "--condition-expression": ("ConditionExpression", "str"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--expected": ("Expected", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--item": ("Item", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++        "--return-values": ("ReturnValues", "str"),
++        "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++    "query": {
++        "--attributes-to-get": ("AttributesToGet", "json"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--consistent-read": ("ConsistentRead", "bool"),
++        "--exclusive-start-key": ("ExclusiveStartKey", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--filter-expression": ("FilterExpression", "str"),
++        "--index-name": ("IndexName", "str"),
++        "--key-condition-expression": ("KeyConditionExpression", "str"),
++        "--key-conditions": ("KeyConditions", "json"),
++        "--limit": ("Limit", "int"),
++        "--projection-expression": ("ProjectionExpression", "str"),
++        "--query-filter": ("QueryFilter", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--scan-index-forward": ("ScanIndexForward", "bool"),
++        "--select": ("Select", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++    "update-item": {
++        "--attribute-updates": ("AttributeUpdates", "json"),
++        "--condition-expression": ("ConditionExpression", "str"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--expected": ("Expected", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--key": ("Key", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++        "--return-values": ("ReturnValues", "str"),
++        "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++        "--table-name": ("TableName", "str"),
++        "--update-expression": ("UpdateExpression", "str"),
++    },
++}
++
++OPS = {
++    "delete-item": "DeleteItem",
++    "delete-table": "DeleteTable",
++    "get-item": "GetItem",
++    "list-tables": "ListTables",
++    "put-item": "PutItem",
++    "query": "Query",
++    "update-item": "UpdateItem",
++}
++
++BOOL_FLAGS = {"--consistent-read"}
++
++
++def parse_args(spec, args):
++    payload = {}
++    seen = set()
++    i = 0
++    n = len(args)
++    while i < n:
++        tok = args[i]
++        if not tok.startswith("--"):
++            usage_error("unexpected argument: " + tok)
++        # handle --flag=value
++        if "=" in tok:
++            flag, val = tok.split("=", 1)
++            has_inline = True
++        else:
++            flag = tok
++            val = None
++            has_inline = False
++        if flag not in spec:
++            usage_error("unknown flag: " + flag)
++        if flag in seen:
++            usage_error("duplicate flag: " + flag)
++        seen.add(flag)
++        field, typ = spec[flag]
++        if flag in BOOL_FLAGS and typ == "bool":
++            # store-true style; may also take explicit value
++            if has_inline:
++                payload[field] = val.lower() in ("true", "1", "yes")
++            else:
++                # peek next
++                if i + 1 < n and args[i + 1] in ("true", "false"):
++                    payload[field] = args[i + 1] == "true"
++                    i += 1
++                else:
++                    payload[field] = True
++            i += 1
++            continue
++        if not has_inline:
++            if i + 1 >= n:
++                usage_error("flag " + flag + " requires a value")
++            val = args[i + 1]
++            i += 2
++        else:
++            i += 1
++        if val == "" and field == "TableName":
++            usage_error("empty value for " + flag)
++        if typ == "str":
++            payload[field] = val
++        elif typ == "int":
++            try:
++                payload[field] = int(val)
++            except ValueError:
++                usage_error("invalid integer for " + flag)
++        elif typ == "bool":
++            payload[field] = val.lower() in ("true", "1", "yes")
++        elif typ == "json":
++            try:
++                payload[field] = json.loads(val)
++            except ValueError:
++                usage_error("invalid JSON for " + flag)
++    return payload
++
++
++def main():
++    if len(sys.argv) < 3:
++        usage_error("missing subcommand")
++    sub = sys.argv[2]
++    if sub not in SPECS:
++        usage_error("unknown subcommand: " + sub)
++    spec = SPECS[sub]
++    args = sys.argv[3:]
++    payload = parse_args(spec, args)
++
++    # Required flags
++    if sub in ("delete-item", "get-item", "update-item"):
++        if "TableName" not in payload:
++            usage_error("--table-name is required")
++        if "Key" not in payload:
++            usage_error("--key is required")
++    elif sub == "put-item":
++        if "TableName" not in payload:
++            usage_error("--table-name is required")
++        if "Item" not in payload:
++            usage_error("--item is required")
++    elif sub in ("query", "delete-table"):
++        if "TableName" not in payload:
++            usage_error("--table-name is required")
++
++    op = OPS[sub]
++    status, parsed = call(op, payload)
++    if status == 200:
++        sys.stdout.write(json.dumps(parsed, indent=4))
++        sys.stdout.write("\n")
++        sys.exit(0)
++    else:
++        service_error(parsed)
++
++
++if __name__ == "__main__":
++    main()

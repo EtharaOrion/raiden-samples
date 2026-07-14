@@ -1,0 +1,364 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,358 @@
++import sys
++import os
++import json
++import base64
++import urllib.request
++import urllib.error
++
++USAGE_EXIT = 252
++SERVICE_EXIT = 254
++
++# Flag specifications per subcommand.
++# Each entry maps flag -> (field_name, kind)
++# kind: "str", "int", "bool", "json"
++
++CREATE_TABLE = {
++    "--attribute-definitions": ("AttributeDefinitions", "json_or_shorthand_ad"),
++    "--billing-mode": ("BillingMode", "str"),
++    "--deletion-protection-enabled": ("DeletionProtectionEnabled", "bool"),
++    "--no-deletion-protection-enabled": ("DeletionProtectionEnabled", "boolfalse"),
++    "--global-secondary-indexes": ("GlobalSecondaryIndexes", "json"),
++    "--global-table-settings-replication-mode": ("GlobalTableSettingsReplicationMode", "str"),
++    "--global-table-source-arn": ("GlobalTableSourceArn", "str"),
++    "--key-schema": ("KeySchema", "json_or_shorthand_ks"),
++    "--local-secondary-indexes": ("LocalSecondaryIndexes", "json"),
++    "--on-demand-throughput": ("OnDemandThroughput", "json_or_shorthand_map"),
++    "--provisioned-throughput": ("ProvisionedThroughput", "json_or_shorthand_map"),
++    "--resource-policy": ("ResourcePolicy", "str"),
++    "--sse-specification": ("SSESpecification", "json_or_shorthand_map"),
++    "--stream-specification": ("StreamSpecification", "json_or_shorthand_map"),
++    "--table-class": ("TableClass", "str"),
++    "--table-name": ("TableName", "str"),
++    "--tags": ("Tags", "json"),
++    "--warm-throughput": ("WarmThroughput", "json_or_shorthand_map"),
++}
++
++DELETE_ITEM = {
++    "--condition-expression": ("ConditionExpression", "str"),
++    "--conditional-operator": ("ConditionalOperator", "str"),
++    "--expected": ("Expected", "json"),
++    "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++    "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++    "--key": ("Key", "json"),
++    "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++    "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++    "--return-values": ("ReturnValues", "str"),
++    "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++    "--table-name": ("TableName", "str"),
++}
++
++DELETE_TABLE = {
++    "--table-name": ("TableName", "str"),
++}
++
++GET_ITEM = {
++    "--attributes-to-get": ("AttributesToGet", "json_or_list"),
++    "--consistent-read": ("ConsistentRead", "bool"),
++    "--no-consistent-read": ("ConsistentRead", "boolfalse"),
++    "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++    "--key": ("Key", "json"),
++    "--projection-expression": ("ProjectionExpression", "str"),
++    "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++    "--table-name": ("TableName", "str"),
++}
++
++LIST_TABLES = {
++    "--exclusive-start-table-name": ("ExclusiveStartTableName", "str"),
++    "--limit": ("Limit", "int"),
++}
++
++PUT_ITEM = {
++    "--condition-expression": ("ConditionExpression", "str"),
++    "--conditional-operator": ("ConditionalOperator", "str"),
++    "--expected": ("Expected", "json"),
++    "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++    "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++    "--item": ("Item", "json"),
++    "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++    "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++    "--return-values": ("ReturnValues", "str"),
++    "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++    "--table-name": ("TableName", "str"),
++}
++
++QUERY = {
++    "--attributes-to-get": ("AttributesToGet", "json_or_list"),
++    "--conditional-operator": ("ConditionalOperator", "str"),
++    "--consistent-read": ("ConsistentRead", "bool"),
++    "--no-consistent-read": ("ConsistentRead", "boolfalse"),
++    "--exclusive-start-key": ("ExclusiveStartKey", "json"),
++    "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++    "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++    "--filter-expression": ("FilterExpression", "str"),
++    "--index-name": ("IndexName", "str"),
++    "--key-condition-expression": ("KeyConditionExpression", "str"),
++    "--key-conditions": ("KeyConditions", "json"),
++    "--limit": ("Limit", "int"),
++    "--projection-expression": ("ProjectionExpression", "str"),
++    "--query-filter": ("QueryFilter", "json"),
++    "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++    "--scan-index-forward": ("ScanIndexForward", "bool"),
++    "--no-scan-index-forward": ("ScanIndexForward", "boolfalse"),
++    "--select": ("Select", "str"),
++    "--table-name": ("TableName", "str"),
++}
++
++UPDATE_ITEM = {
++    "--attribute-updates": ("AttributeUpdates", "json"),
++    "--condition-expression": ("ConditionExpression", "str"),
++    "--conditional-operator": ("ConditionalOperator", "str"),
++    "--expected": ("Expected", "json"),
++    "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++    "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++    "--key": ("Key", "json"),
++    "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++    "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++    "--return-values": ("ReturnValues", "str"),
++    "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++    "--table-name": ("TableName", "str"),
++    "--update-expression": ("UpdateExpression", "str"),
++}
++
++SUBCOMMANDS = {
++    "create-table": ("CreateTable", CREATE_TABLE),
++    "delete-item": ("DeleteItem", DELETE_ITEM),
++    "delete-table": ("DeleteTable", DELETE_TABLE),
++    "get-item": ("GetItem", GET_ITEM),
++    "list-tables": ("ListTables", LIST_TABLES),
++    "put-item": ("PutItem", PUT_ITEM),
++    "query": ("Query", QUERY),
++    "update-item": ("UpdateItem", UPDATE_ITEM),
++}
++
++
++def usage_error(msg):
++    sys.stderr.write("usage error: " + msg + "\n")
++    sys.exit(USAGE_EXIT)
++
++
++def parse_shorthand_list_of_maps(val):
++    # e.g. "AttributeName=pk,AttributeType=S"  (one map)
++    # Multiple maps come from multiple argv tokens, handled by caller.
++    d = {}
++    for pair in val.split(","):
++        if "=" not in pair:
++            raise ValueError("bad shorthand: " + val)
++        k, v = pair.split("=", 1)
++        d[k] = v
++    return d
++
++
++def coerce_number_fields(d, intfields):
++    for k in list(d.keys()):
++        if k in intfields:
++            try:
++                d[k] = int(d[k])
++            except ValueError:
++                pass
++    return d
++
++
++def build_request(op, flagspec, args):
++    request = {}
++    i = 0
++    n = len(args)
++    # For flags that can take multiple shorthand tokens (attribute-definitions, key-schema)
++    while i < n:
++        tok = args[i]
++        if not tok.startswith("--"):
++            usage_error("unexpected argument: " + tok)
++        # handle --flag=value form
++        eqval = None
++        flag = tok
++        if "=" in tok:
++            flag, eqval = tok.split("=", 1)
++        if flag not in flagspec:
++            usage_error("unknown flag: " + flag)
++        field, kind = flagspec[flag]
++
++        if kind in ("bool", "boolfalse"):
++            request[field] = (kind == "bool")
++            i += 1
++            continue
++
++        if kind in ("json_or_shorthand_ad", "json_or_shorthand_ks"):
++            # collect one or more following tokens that are shorthand or a single json
++            values = []
++            if eqval is not None:
++                values.append(eqval)
++                i += 1
++            else:
++                i += 1
++                while i < n and not args[i].startswith("--"):
++                    values.append(args[i])
++                    i += 1
++            if not values:
++                usage_error("expected value for " + flag)
++            # if single value looks like json
++            if len(values) == 1 and (values[0].lstrip().startswith("[") or values[0].lstrip().startswith("{")):
++                try:
++                    request[field] = json.loads(values[0])
++                except ValueError:
++                    usage_error("invalid JSON for " + flag)
++            else:
++                lst = []
++                for v in values:
++                    try:
++                        m = parse_shorthand_list_of_maps(v)
++                    except ValueError:
++                        usage_error("invalid shorthand for " + flag)
++                    lst.append(m)
++                request[field] = lst
++            continue
++
++        if kind == "json_or_shorthand_map":
++            if eqval is not None:
++                val = eqval
++                i += 1
++            else:
++                i += 1
++                if i >= n:
++                    usage_error("expected value for " + flag)
++                val = args[i]
++                i += 1
++            if val.lstrip().startswith("{"):
++                try:
++                    request[field] = json.loads(val)
++                except ValueError:
++                    usage_error("invalid JSON for " + flag)
++            else:
++                try:
++                    m = parse_shorthand_list_of_maps(val)
++                except ValueError:
++                    usage_error("invalid shorthand for " + flag)
++                m = coerce_number_fields(m, ("ReadCapacityUnits", "WriteCapacityUnits",
++                                             "MaxReadRequestUnits", "MaxWriteRequestUnits",
++                                             "ReadUnitsPerSecond", "WriteUnitsPerSecond"))
++                request[field] = m
++            continue
++
++        # value-taking flags
++        if eqval is not None:
++            val = eqval
++            i += 1
++        else:
++            i += 1
++            if i >= n:
++                usage_error("expected value for " + flag)
++            val = args[i]
++            i += 1
++
++        if kind == "str":
++            request[field] = val
++        elif kind == "int":
++            try:
++                request[field] = int(val)
++            except ValueError:
++                usage_error("invalid integer for " + flag)
++        elif kind == "json":
++            try:
++                request[field] = json.loads(val)
++            except ValueError:
++                usage_error("invalid JSON for " + flag)
++        elif kind == "json_or_list":
++            if val.lstrip().startswith("["):
++                try:
++                    request[field] = json.loads(val)
++                except ValueError:
++                    usage_error("invalid JSON for " + flag)
++            else:
++                request[field] = [x for x in val.split(",") if x]
++        else:
++            request[field] = val
++
++    return request
++
++
++def call_ddb(op, payload):
++    endpoint = os.environ.get("AWS_ENDPOINT_URL_DYNAMODB") or os.environ["AWS_ENDPOINT_URL"]
++    data = json.dumps(payload).encode("utf-8")
++    headers = {
++        "Content-Type": "application/x-amz-json-1.0",
++        "X-Amz-Target": "DynamoDB_20120810." + op,
++        "Authorization": ("AWS4-HMAC-SHA256 Credential=dummy/20200101/us-east-1/dynamodb/aws4_request, "
++                          "SignedHeaders=content-type;host;x-amz-target, Signature=dummy"),
++        "X-Amz-Date": "20200101T000000Z",
++    }
++    req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
++    try:
++        resp = urllib.request.urlopen(req)
++        body = resp.read().decode("utf-8")
++        return 0, body
++    except urllib.error.HTTPError as e:
++        body = e.read().decode("utf-8")
++        return 1, body
++
++
++def error_code_from_body(body):
++    try:
++        obj = json.loads(body)
++    except ValueError:
++        return "UnknownError"
++    typ = obj.get("__type") or obj.get("code") or "UnknownError"
++    if "#" in typ:
++        typ = typ.split("#", 1)[1]
++    return typ
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3:
++        usage_error("missing command")
++    prefix = argv[1]
++    sub = argv[2]
++    if prefix != "dynamodb":
++        usage_error("unknown service: " + prefix)
++    if sub not in SUBCOMMANDS:
++        usage_error("unknown subcommand: " + sub)
++
++    op, flagspec = SUBCOMMANDS[sub]
++    args = argv[3:]
++
++    request = build_request(op, flagspec, args)
++
++    # Minimal required-field validation for usage errors.
++    if sub == "create-table":
++        if not request.get("TableName"):
++            usage_error("--table-name is required")
++    elif sub in ("delete-table",):
++        if not request.get("TableName"):
++            usage_error("--table-name is required")
++    elif sub in ("delete-item", "get-item", "update-item"):
++        if not request.get("TableName"):
++            usage_error("--table-name is required")
++        if "Key" not in request:
++            usage_error("--key is required")
++    elif sub == "put-item":
++        if not request.get("TableName"):
++            usage_error("--table-name is required")
++        if "Item" not in request:
++            usage_error("--item is required")
++    elif sub == "query":
++        if not request.get("TableName"):
++            usage_error("--table-name is required")
++
++    rc, body = call_ddb(op, request)
++    if rc != 0:
++        code = error_code_from_body(body)
++        sys.stderr.write("An error occurred (" + code + ")\n")
++        sys.exit(SERVICE_EXIT)
++
++    sys.stdout.write(body if body.strip() else "")
++    if body.strip():
++        sys.stdout.write("\n")
++    sys.exit(0)
++
++
++if __name__ == "__main__":
++    main()

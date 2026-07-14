@@ -1,0 +1,1001 @@
+diff --git a/submission/aws b/submission/aws
+new file mode 100755
+index 0000000..51476f7
+--- /dev/null
++++ b/submission/aws
+@@ -0,0 +1,995 @@
++#!/usr/bin/env python3
++import sys
++import os
++import hashlib
++import hmac
++import datetime
++import urllib.parse
++import http.client
++import xml.etree.ElementTree as ET
++
++S3_NS = 'http://s3.amazonaws.com/doc/2006-03-01/'
++EMPTY_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
++MULTIPART_THRESHOLD = 8 * 1024 * 1024
++
++
++class ClientError(Exception):
++    def __init__(self, code, message, status=400):
++        self.code = code
++        self.message = message
++        self.status = status
++        super().__init__(message)
++
++    def __str__(self):
++        return "An error occurred (%s) when calling the operation: %s" % (
++            self.code, self.message)
++
++
++def strip_ns(tag):
++    if '}' in tag:
++        return tag.split('}', 1)[1]
++    return tag
++
++
++def find_bucket_key(s3_path):
++    s3_components = s3_path.split('/', 1)
++    bucket = s3_components[0]
++    key = ''
++    if len(s3_components) > 1:
++        key = s3_components[1]
++    return bucket, key
++
++
++def split_s3_bucket_key(path):
++    if path.startswith('s3://'):
++        path = path[5:]
++    return find_bucket_key(path)
++
++
++class Config:
++    def __init__(self):
++        self.access_key = os.environ.get('AWS_ACCESS_KEY_ID', '')
++        self.secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY', '')
++        self.session_token = os.environ.get('AWS_SESSION_TOKEN')
++        self.region = (os.environ.get('AWS_REGION')
++                       or os.environ.get('AWS_DEFAULT_REGION')
++                       or 'us-east-1')
++        endpoint = (os.environ.get('AWS_ENDPOINT_URL_S3')
++                    or os.environ.get('AWS_ENDPOINT_URL'))
++        if not endpoint:
++            endpoint = 'https://s3.%s.amazonaws.com' % self.region
++        self.endpoint = endpoint.rstrip('/')
++
++
++def sigv4_sign(cfg, method, url, headers, body):
++    parsed = urllib.parse.urlparse(url)
++    host = parsed.netloc
++    path = parsed.path
++    if not path:
++        path = '/'
++    query = parsed.query
++
++    if body is None:
++        body = b''
++    payload_hash = EMPTY_SHA256 if body == b'' else hashlib.sha256(body).hexdigest()
++
++    now = datetime.datetime.now(datetime.timezone.utc)
++    amzdate = now.strftime('%Y%m%dT%H%M%SZ')
++    datestamp = now.strftime('%Y%m%d')
++
++    headers['host'] = host
++    headers['x-amz-date'] = amzdate
++    headers['x-amz-content-sha256'] = payload_hash
++    if cfg.session_token:
++        headers['x-amz-security-token'] = cfg.session_token
++
++    segments = path.split('/')
++    enc_segments = [urllib.parse.quote(s, safe='') for s in segments]
++    canonical_uri = '/'.join(enc_segments)
++
++    if query:
++        pairs = urllib.parse.parse_qsl(query, keep_blank_values=True)
++        enc = [(urllib.parse.quote(k, safe='-_.~'),
++                urllib.parse.quote(v, safe='-_.~')) for k, v in pairs]
++        enc.sort()
++        canonical_querystring = '&'.join('%s=%s' % (k, v) for k, v in enc)
++    else:
++        canonical_querystring = ''
++
++    signed_names = sorted(h.lower() for h in headers)
++    canonical_headers = ''.join(
++        '%s:%s\n' % (n, str(headers[n]).strip())
++        for n in signed_names)
++    signed_headers = ';'.join(signed_names)
++
++    canonical_request = '\n'.join([
++        method, canonical_uri, canonical_querystring,
++        canonical_headers, signed_headers, payload_hash])
++
++    algorithm = 'AWS4-HMAC-SHA256'
++    credential_scope = '%s/%s/s3/aws4_request' % (datestamp, cfg.region)
++    string_to_sign = '\n'.join([
++        algorithm, amzdate, credential_scope,
++        hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()])
++
++    def _hmac(key, msg):
++        return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).digest()
++
++    kdate = _hmac(('AWS4' + cfg.secret_key).encode('utf-8'), datestamp)
++    kregion = _hmac(kdate, cfg.region)
++    kservice = _hmac(kregion, 's3')
++    ksigning = _hmac(kservice, 'aws4_request')
++    signature = hmac.new(ksigning, string_to_sign.encode('utf-8'),
++                         hashlib.sha256).hexdigest()
++
++    auth = ('%s Credential=%s/%s, SignedHeaders=%s, Signature=%s' % (
++        algorithm, cfg.access_key, credential_scope, signed_headers, signature))
++    headers['Authorization'] = auth
++    return headers
++
++
++class S3Client:
++    def __init__(self, cfg):
++        self.cfg = cfg
++
++    def _request(self, method, bucket=None, key=None, query=None,
++                 body=None, extra_headers=None):
++        cfg = self.cfg
++        url = cfg.endpoint
++        if bucket is not None:
++            url += '/' + bucket
++            if key:
++                url += '/' + urllib.parse.quote(key, safe='/')
++        if query:
++            qs = urllib.parse.urlencode(query)
++            url += '?' + qs
++
++        headers = {}
++        if extra_headers:
++            headers.update(extra_headers)
++        sigv4_sign(cfg, method, url, headers, body if body else b'')
++
++        parsed = urllib.parse.urlparse(url)
++        if parsed.scheme == 'https':
++            conn = http.client.HTTPSConnection(parsed.netloc, timeout=60)
++        else:
++            conn = http.client.HTTPConnection(parsed.netloc, timeout=60)
++
++        path = parsed.path
++        if parsed.query:
++            path += '?' + parsed.query
++
++        try:
++            conn.request(method, path, body=body if body else b'', headers=headers)
++            resp = conn.getresponse()
++            data = resp.read()
++            status = resp.status
++        except Exception as e:
++            conn.close()
++            raise ClientError('ConnectionError', str(e), 0)
++        conn.close()
++
++        if status >= 300:
++            self._raise_error(data, status)
++        return status, data, resp
++
++    def _raise_error(self, data, status):
++        code = 'Unknown'
++        message = 'Unknown error'
++        try:
++            root = ET.fromstring(data)
++            for child in root.iter():
++                t = strip_ns(child.tag)
++                if t == 'Code' and child.text:
++                    code = child.text
++                elif t == 'Message' and child.text:
++                    message = child.text
++        except Exception:
++            pass
++        if code == 'Unknown':
++            if status == 404:
++                code = 'NoSuchKey'
++                message = 'The specified key does not exist.'
++            elif status == 403:
++                code = 'AccessDenied'
++                message = 'Access Denied'
++        raise ClientError(code, message, status)
++
++    def put_object(self, bucket, key, body, extra_headers=None):
++        self._request('PUT', bucket, key, body=body, extra_headers=extra_headers)
++
++    def put_object_auto(self, bucket, key, body, extra_headers=None):
++        # Match real aws-cli default: multipart_threshold=8MiB, chunksize=8MiB.
++        if len(body) >= MULTIPART_THRESHOLD:
++            self._multipart_upload(bucket, key, body, extra_headers)
++        else:
++            self.put_object(bucket, key, body, extra_headers)
++
++    def create_multipart_upload(self, bucket, key, extra_headers=None):
++        status, data, resp = self._request(
++            'POST', bucket, key, query={'uploads': ''},
++            extra_headers=extra_headers)
++        root = ET.fromstring(data)
++        for child in root.iter():
++            if strip_ns(child.tag) == 'UploadId' and child.text:
++                return child.text
++        raise ClientError('NoUploadId', 'could not parse UploadId', status)
++
++    def upload_part(self, bucket, key, upload_id, part_number, body):
++        status, data, resp = self._request(
++            'PUT', bucket, key,
++            query={'partNumber': part_number, 'uploadId': upload_id},
++            body=body)
++        etag = resp.getheader('ETag')
++        return etag
++
++    def complete_multipart_upload(self, bucket, key, upload_id, parts):
++        pieces = []
++        for pn, etag in parts:
++            pieces.append('<Part><PartNumber>%d</PartNumber>'
++                          '<ETag>%s</ETag></Part>' % (pn, etag))
++        body = ('<CompleteMultipartUpload>%s</CompleteMultipartUpload>'
++                % ''.join(pieces)).encode('utf-8')
++        self._request('POST', bucket, key,
++                      query={'uploadId': upload_id}, body=body)
++
++    def _multipart_upload(self, bucket, key, body, extra_headers=None):
++        upload_id = self.create_multipart_upload(bucket, key, extra_headers)
++        parts = []
++        pn = 1
++        for i in range(0, len(body), MULTIPART_THRESHOLD):
++            chunk = body[i:i + MULTIPART_THRESHOLD]
++            etag = self.upload_part(bucket, key, upload_id, pn, chunk)
++            parts.append((pn, etag))
++            pn += 1
++        self.complete_multipart_upload(bucket, key, upload_id, parts)
++
++    def get_object(self, bucket, key):
++        status, data, resp = self._request('GET', bucket, key)
++        return data
++
++    def head_object(self, bucket, key):
++        status, data, resp = self._request('HEAD', bucket, key)
++        return resp
++
++    def delete_object(self, bucket, key):
++        self._request('DELETE', bucket, key)
++
++    def copy_object(self, dest_bucket, dest_key, src_bucket, src_key):
++        headers = {'x-amz-copy-source': '/' + src_bucket + '/' +
++                   urllib.parse.quote(src_key, safe='/')}
++        self._request('PUT', dest_bucket, dest_key, extra_headers=headers)
++
++    def create_bucket(self, bucket):
++        body = b''
++        headers = None
++        if self.cfg.region != 'us-east-1':
++            body = ('<CreateBucketConfiguration xmlns="%s">'
++                    '<LocationConstraint>%s</LocationConstraint>'
++                    '</CreateBucketConfiguration>' % (S3_NS, self.cfg.region)).encode('utf-8')
++        self._request('PUT', bucket, body=body)
++
++    def delete_bucket(self, bucket):
++        self._request('DELETE', bucket)
++
++    def list_buckets(self):
++        status, data, resp = self._request('GET')
++        buckets = []
++        try:
++            root = ET.fromstring(data)
++            for b in root.iter():
++                if strip_ns(b.tag) == 'Bucket':
++                    name = None
++                    cdate = None
++                    for c in b:
++                        t = strip_ns(c.tag)
++                        if t == 'Name':
++                            name = c.text
++                        elif t == 'CreationDate':
++                            cdate = c.text
++                    if name:
++                        buckets.append((name, cdate))
++        except Exception:
++            pass
++        return buckets
++
++    def list_objects_v2(self, bucket, prefix='', delimiter=None):
++        contents = []
++        prefixes = []
++        token = None
++        while True:
++            query = {'list-type': '2'}
++            if prefix:
++                query['prefix'] = prefix
++            if delimiter:
++                query['delimiter'] = delimiter
++            if token:
++                query['continuation-token'] = token
++            status, data, resp = self._request('GET', bucket, query=query)
++            truncated = False
++            next_token = None
++            try:
++                root = ET.fromstring(data)
++                for child in root:
++                    t = strip_ns(child.tag)
++                    if t == 'Contents':
++                        key = None
++                        size = 0
++                        lm = None
++                        etag = None
++                        for c in child:
++                            ct = strip_ns(c.tag)
++                            if ct == 'Key':
++                                key = c.text
++                            elif ct == 'Size':
++                                size = int(c.text or 0)
++                            elif ct == 'LastModified':
++                                lm = c.text
++                            elif ct == 'ETag':
++                                etag = c.text
++                        contents.append({'Key': key, 'Size': size,
++                                         'LastModified': lm, 'ETag': etag})
++                    elif t == 'CommonPrefixes':
++                        for c in child:
++                            if strip_ns(c.tag) == 'Prefix':
++                                prefixes.append(c.text)
++                    elif t == 'IsTruncated':
++                        truncated = (child.text == 'true')
++                    elif t == 'NextContinuationToken':
++                        next_token = child.text
++            except Exception:
++                pass
++            if truncated and next_token:
++                token = next_token
++            else:
++                break
++        return contents, prefixes
++
++
++def uni_print(s, out=None):
++    if out is None:
++        out = sys.stdout
++    out.write(s)
++    out.flush()
++
++
++def parse_last_mod(iso):
++    if not iso:
++        return '                        '
++    try:
++        s = iso.replace('Z', '')
++        if '.' in s:
++            s = s.split('.')[0]
++        dt = datetime.datetime.strptime(s, '%Y-%m-%dT%H:%M:%S')
++        return dt.strftime('%Y-%m-%d %H:%M:%S')
++    except Exception:
++        return iso
++
++
++# ------------- ls -------------
++def cmd_ls(argv):
++    import argparse
++    p = argparse.ArgumentParser(prog='aws s3 ls', add_help=False)
++    p.add_argument('paths', nargs='?', default='s3://')
++    p.add_argument('--recursive', action='store_true', dest='dir_op')
++    p.add_argument('--page-size', type=int, default=None)
++    p.add_argument('--human-readable', action='store_true')
++    p.add_argument('--summarize', action='store_true')
++    p.add_argument('--request-payer', nargs='?', default=None)
++    p.add_argument('--bucket-name-prefix', default=None)
++    p.add_argument('--bucket-region', default=None)
++    try:
++        args, unknown = p.parse_known_args(argv)
++    except SystemExit:
++        return 252
++    for u in unknown:
++        if u.startswith('--'):
++            sys.stderr.write("Unknown options: %s\n" % u)
++            return 252
++
++    cfg = Config()
++    client = S3Client(cfg)
++
++    path = args.paths
++    if path.startswith('s3://'):
++        path = path[5:]
++    bucket, key = find_bucket_key(path)
++
++    try:
++        if not bucket:
++            buckets = client.list_buckets()
++            for name, cdate in buckets:
++                uni_print(parse_last_mod(cdate) + ' ' + name + '\n')
++            return 0
++        elif args.dir_op:
++            contents, prefixes = client.list_objects_v2(bucket, key, delimiter=None)
++            found = bool(contents)
++            for c in contents:
++                uni_print('%s %10d %s\n' % (parse_last_mod(c['LastModified']),
++                                            c['Size'], c['Key']))
++            if key and not found:
++                return 1
++            return 0
++        else:
++            contents, prefixes = client.list_objects_v2(bucket, key, delimiter='/')
++            found = bool(contents) or bool(prefixes)
++            for pfx in prefixes:
++                uni_print('%s %s\n' % ('           PRE', _basename_pre(pfx, key)))
++            for c in contents:
++                uni_print('%s %10d %s\n' % (parse_last_mod(c['LastModified']),
++                                            c['Size'], _basename_key(c['Key'], key)))
++            if key and not found:
++                return 1
++            return 0
++    except ClientError as e:
++        sys.stderr.write('\n' + str(e) + '\n')
++        return 1
++
++
++def _basename_pre(pfx, key):
++    idx = key.rfind('/')
++    if idx >= 0:
++        base = key[:idx + 1]
++        if pfx.startswith(base):
++            return pfx[len(base):]
++    return pfx
++
++
++def _basename_key(k, key):
++    idx = key.rfind('/')
++    if idx >= 0:
++        base = key[:idx + 1]
++        if k.startswith(base):
++            return k[len(base):]
++    return k
++
++
++# ------------- transfer arg parser -------------
++def build_transfer_parser(prog):
++    import argparse
++    p = argparse.ArgumentParser(prog=prog, add_help=False)
++    p.add_argument('paths', nargs='*')
++    p.add_argument('--recursive', action='store_true')
++    p.add_argument('--dryrun', action='store_true')
++    p.add_argument('--quiet', action='store_true')
++    p.add_argument('--only-show-errors', action='store_true')
++    p.add_argument('--no-progress', action='store_true')
++    p.add_argument('--copy-props', default=None)
++    p.add_argument('--checksum-algorithm', default=None)
++    p.add_argument('--checksum-mode', default=None)
++    p.add_argument('--content-type', default=None)
++    p.add_argument('--content-encoding', default=None)
++    p.add_argument('--content-disposition', default=None)
++    p.add_argument('--content-language', default=None)
++    p.add_argument('--cache-control', default=None)
++    p.add_argument('--expires', default=None)
++    p.add_argument('--metadata', default=None)
++    p.add_argument('--metadata-directive', default=None)
++    p.add_argument('--acl', default=None)
++    p.add_argument('--grants', nargs='+', default=None)
++    p.add_argument('--expected-size', default=None)
++    p.add_argument('--page-size', type=int, default=None)
++    p.add_argument('--no-guess-mime-type', action='store_true')
++    p.add_argument('--follow-symlinks', action='store_true')
++    p.add_argument('--no-follow-symlinks', action='store_true')
++    p.add_argument('--exclude', action='append', default=[])
++    p.add_argument('--include', action='append', default=[])
++    p.add_argument('--sse', nargs='?', default=None)
++    p.add_argument('--sse-c', nargs='?', default=None)
++    p.add_argument('--sse-c-key', default=None)
++    p.add_argument('--sse-kms-key-id', default=None)
++    p.add_argument('--storage-class', default=None)
++    p.add_argument('--request-payer', nargs='?', default=None)
++    p.add_argument('--force-glacier-transfer', action='store_true')
++    p.add_argument('--ignore-glacier-warnings', action='store_true')
++    return p
++
++
++def reject_unknown(unknown):
++    """Return 252 with aws-cli-style message if any unknown --flag present."""
++    bad = [u for u in unknown if u.startswith('--')]
++    if bad:
++        sys.stderr.write("Unknown options: %s\n" % ','.join(bad))
++        return 252
++    return None
++
++
++def is_s3(p):
++    return p.startswith('s3://')
++
++
++def upload_bytes(client, bucket, key, data, extra_headers=None):
++    client.put_object_auto(bucket, key, data, extra_headers)
++
++
++def build_put_headers(args):
++    headers = {}
++    sse = getattr(args, 'sse', None)
++    if sse is not None:
++        # bare --sse => AES256; --sse aws:kms => aws:kms
++        headers['x-amz-server-side-encryption'] = sse if sse else 'AES256'
++    kms_key = getattr(args, 'sse_kms_key_id', None)
++    if kms_key:
++        headers['x-amz-server-side-encryption-aws-kms-key-id'] = kms_key
++    storage_class = getattr(args, 'storage_class', None)
++    if storage_class:
++        headers['x-amz-storage-class'] = storage_class
++    content_type = getattr(args, 'content_type', None)
++    if content_type:
++        headers['Content-Type'] = content_type
++    return headers or None
++
++
++# ------------- cp -------------
++def cmd_cp(argv):
++    p = build_transfer_parser('aws s3 cp')
++    try:
++        args, unknown = p.parse_known_args(argv)
++    except SystemExit:
++        return 252
++    rc = reject_unknown(unknown)
++    if rc is not None:
++        return rc
++    paths = args.paths
++    if len(paths) != 2:
++        sys.stderr.write('usage: aws s3 cp <LocalPath> <S3Uri> or '
++                         '<S3Uri> <LocalPath> or <S3Uri> <S3Uri>\n')
++        return 2
++    src, dst = paths
++    cfg = Config()
++    client = S3Client(cfg)
++
++    src_is_s3 = is_s3(src)
++    dst_is_s3 = is_s3(dst)
++
++    if src == '-' and dst_is_s3:
++        b, k = split_s3_bucket_key(dst)
++        data = sys.stdin.buffer.read()
++        try:
++            upload_bytes(client, b, k, data)
++        except ClientError as e:
++            sys.stderr.write('upload failed: %s to %s %s\n' % (src, dst, str(e)))
++            return 1
++        return 0
++    if dst == '-' and src_is_s3:
++        b, k = split_s3_bucket_key(src)
++        try:
++            data = client.get_object(b, k)
++        except ClientError as e:
++            sys.stderr.write('download failed: %s to %s %s\n' % (src, dst, str(e)))
++            return 1
++        sys.stdout.buffer.write(data)
++        sys.stdout.buffer.flush()
++        return 0
++
++    if not src_is_s3 and not dst_is_s3:
++        sys.stderr.write('cp: local to local copy not supported\n')
++        return 1
++
++    if not src_is_s3 and dst_is_s3:
++        return do_upload(client, src, dst, args, 'upload', 'copy')
++    if src_is_s3 and not dst_is_s3:
++        return do_download(client, src, dst, args)
++    if src_is_s3 and dst_is_s3:
++        return do_copy(client, src, dst, args)
++    return 1
++
++
++def resolve_dest_key(dst, src_basename):
++    b, k = split_s3_bucket_key(dst)
++    if k == '' or k.endswith('/'):
++        k = k + src_basename
++    return b, k
++
++
++def do_upload(client, src, dst, args, op_label, unused):
++    if not os.path.isfile(src):
++        sys.stderr.write('upload failed: %s The user-provided path %s '
++                         'does not exist.\n' % (src, src))
++        return 1
++    b, k = resolve_dest_key(dst, os.path.basename(src))
++    dest_uri = 's3://%s/%s' % (b, k)
++    if args.dryrun:
++        uni_print('(dryrun) upload: %s to %s\n' % (src, dest_uri))
++        return 0
++    with open(src, 'rb') as f:
++        data = f.read()
++    try:
++        upload_bytes(client, b, k, data, build_put_headers(args))
++    except ClientError as e:
++        sys.stderr.write('upload failed: %s to %s %s\n' % (src, dest_uri, str(e)))
++        return 1
++    uni_print('upload: %s to %s\n' % (src, dest_uri))
++    return 0
++
++
++def do_download(client, src, dst, args):
++    b, k = split_s3_bucket_key(src)
++    if os.path.isdir(dst) or dst.endswith('/'):
++        outpath = os.path.join(dst, os.path.basename(k))
++    else:
++        outpath = dst
++    src_uri = 's3://%s/%s' % (b, k)
++    if args.dryrun:
++        uni_print('(dryrun) download: %s to %s\n' % (src_uri, outpath))
++        return 0
++    try:
++        data = client.get_object(b, k)
++    except ClientError as e:
++        sys.stderr.write('download failed: %s to %s %s\n' % (src_uri, outpath, str(e)))
++        return 1
++    try:
++        with open(outpath, 'wb') as f:
++            f.write(data)
++    except Exception as e:
++        sys.stderr.write('download failed: %s to %s %s\n' % (src_uri, outpath, str(e)))
++        return 1
++    uni_print('download: %s to %s\n' % (src_uri, outpath))
++    return 0
++
++
++def do_copy(client, src, dst, args):
++    sb, sk = split_s3_bucket_key(src)
++    db, dk = resolve_dest_key(dst, os.path.basename(sk))
++    src_uri = 's3://%s/%s' % (sb, sk)
++    dst_uri = 's3://%s/%s' % (db, dk)
++    if args.dryrun:
++        uni_print('(dryrun) copy: %s to %s\n' % (src_uri, dst_uri))
++        return 0
++    try:
++        client.copy_object(db, dk, sb, sk)
++    except ClientError as e:
++        sys.stderr.write('copy failed: %s to %s %s\n' % (src_uri, dst_uri, str(e)))
++        return 1
++    uni_print('copy: %s to %s\n' % (src_uri, dst_uri))
++    return 0
++
++
++# ------------- mv -------------
++def cmd_mv(argv):
++    p = build_transfer_parser('aws s3 mv')
++    try:
++        args, unknown = p.parse_known_args(argv)
++    except SystemExit:
++        return 252
++    rc = reject_unknown(unknown)
++    if rc is not None:
++        return rc
++    paths = args.paths
++    if len(paths) != 2:
++        sys.stderr.write('usage: aws s3 mv <LocalPath> <S3Uri> or '
++                         '<S3Uri> <LocalPath> or <S3Uri> <S3Uri>\n')
++        return 2
++    src, dst = paths
++    cfg = Config()
++    client = S3Client(cfg)
++
++    src_is_s3 = is_s3(src)
++    dst_is_s3 = is_s3(dst)
++
++    if src_is_s3 and dst_is_s3:
++        sb, sk = split_s3_bucket_key(src)
++        db, dk = split_s3_bucket_key(dst)
++        eff_dk = dk
++        if dk == '' or dk.endswith('/'):
++            eff_dk = dk + os.path.basename(sk)
++        if sb == db and sk == eff_dk:
++            sys.stderr.write('Cannot mv a file onto itself.\n')
++            return 252
++
++    if not src_is_s3 and not dst_is_s3:
++        sys.stderr.write('mv: local to local not supported\n')
++        return 1
++
++    if not src_is_s3 and dst_is_s3:
++        if not os.path.isfile(src):
++            sys.stderr.write('move failed: %s does not exist.\n' % src)
++            return 1
++        b, k = resolve_dest_key(dst, os.path.basename(src))
++        dest_uri = 's3://%s/%s' % (b, k)
++        if args.dryrun:
++            uni_print('(dryrun) move: %s to %s\n' % (src, dest_uri))
++            return 0
++        with open(src, 'rb') as f:
++            data = f.read()
++        try:
++            upload_bytes(client, b, k, data)
++        except ClientError as e:
++            sys.stderr.write('move failed: %s to %s %s\n' % (src, dest_uri, str(e)))
++            return 1
++        try:
++            os.remove(src)
++        except Exception:
++            pass
++        uni_print('move: %s to %s\n' % (src, dest_uri))
++        return 0
++
++    if src_is_s3 and not dst_is_s3:
++        b, k = split_s3_bucket_key(src)
++        if os.path.isdir(dst) or dst.endswith('/'):
++            outpath = os.path.join(dst, os.path.basename(k))
++        else:
++            outpath = dst
++        src_uri = 's3://%s/%s' % (b, k)
++        if args.dryrun:
++            uni_print('(dryrun) move: %s to %s\n' % (src_uri, outpath))
++            return 0
++        try:
++            data = client.get_object(b, k)
++        except ClientError as e:
++            sys.stderr.write('move failed: %s to %s %s\n' % (src_uri, outpath, str(e)))
++            return 1
++        with open(outpath, 'wb') as f:
++            f.write(data)
++        try:
++            client.delete_object(b, k)
++        except ClientError:
++            pass
++        uni_print('move: %s to %s\n' % (src_uri, outpath))
++        return 0
++
++    if src_is_s3 and dst_is_s3:
++        sb, sk = split_s3_bucket_key(src)
++        db, dk = resolve_dest_key(dst, os.path.basename(sk))
++        src_uri = 's3://%s/%s' % (sb, sk)
++        dst_uri = 's3://%s/%s' % (db, dk)
++        if args.dryrun:
++            uni_print('(dryrun) move: %s to %s\n' % (src_uri, dst_uri))
++            return 0
++        try:
++            client.copy_object(db, dk, sb, sk)
++        except ClientError as e:
++            sys.stderr.write('move failed: %s to %s %s\n' % (src_uri, dst_uri, str(e)))
++            return 1
++        try:
++            client.delete_object(sb, sk)
++        except ClientError:
++            pass
++        uni_print('move: %s to %s\n' % (src_uri, dst_uri))
++        return 0
++    return 1
++
++
++# ------------- rm -------------
++def cmd_rm(argv):
++    p = build_transfer_parser('aws s3 rm')
++    try:
++        args, unknown = p.parse_known_args(argv)
++    except SystemExit:
++        return 252
++    rc = reject_unknown(unknown)
++    if rc is not None:
++        return rc
++    paths = args.paths
++    if len(paths) != 1:
++        sys.stderr.write('usage: aws s3 rm <S3Uri>\n')
++        return 2
++    target = paths[0]
++    if not is_s3(target):
++        sys.stderr.write('rm: only supports s3 targets\n')
++        return 2
++    cfg = Config()
++    client = S3Client(cfg)
++
++    b, k = split_s3_bucket_key(target)
++
++    if args.recursive:
++        try:
++            contents, _ = client.list_objects_v2(b, k, delimiter=None)
++        except ClientError as e:
++            sys.stderr.write('\n' + str(e) + '\n')
++            return 1
++        rc = 0
++        for c in contents:
++            uri = 's3://%s/%s' % (b, c['Key'])
++            if args.dryrun:
++                uni_print('(dryrun) delete: %s\n' % uri)
++                continue
++            try:
++                client.delete_object(b, c['Key'])
++                uni_print('delete: %s\n' % uri)
++            except ClientError as e:
++                sys.stderr.write('delete failed: %s %s\n' % (uri, str(e)))
++                rc = 1
++        return rc
++
++    uri = 's3://%s/%s' % (b, k)
++    if args.dryrun:
++        uni_print('(dryrun) delete: %s\n' % uri)
++        return 0
++    try:
++        client.delete_object(b, k)
++    except ClientError as e:
++        sys.stderr.write('delete failed: %s %s\n' % (uri, str(e)))
++        return 1
++    uni_print('delete: %s\n' % uri)
++    return 0
++
++
++# ------------- sync -------------
++def cmd_sync(argv):
++    p = build_transfer_parser('aws s3 sync')
++    try:
++        args, unknown = p.parse_known_args(argv)
++    except SystemExit:
++        return 252
++    # sync does not accept --recursive; it is inherently recursive.
++    if args.recursive:
++        sys.stderr.write("Unknown options: --recursive\n")
++        return 252
++    rc = reject_unknown(unknown)
++    if rc is not None:
++        return rc
++    paths = args.paths
++    if len(paths) != 2:
++        sys.stderr.write('usage: aws s3 sync <LocalPath|S3Uri> <LocalPath|S3Uri>\n')
++        return 252
++    src, dst = paths
++    cfg = Config()
++    client = S3Client(cfg)
++
++    src_is_s3 = is_s3(src)
++    dst_is_s3 = is_s3(dst)
++
++    # local -> s3
++    if not src_is_s3 and dst_is_s3:
++        if not os.path.isdir(src):
++            sys.stderr.write('The user-provided path %s does not exist.\n' % src)
++            return 255
++        db, dk = split_s3_bucket_key(dst)
++        prefix = dk
++        if prefix and not prefix.endswith('/'):
++            prefix += '/'
++        try:
++            existing, _ = client.list_objects_v2(db, prefix, delimiter=None)
++        except ClientError:
++            existing = []
++        exist_map = {}
++        for c in existing:
++            rel = c['Key'][len(prefix):] if prefix else c['Key']
++            exist_map[rel] = c['Size']
++        rc = 0
++        for root, dirs, files in os.walk(src):
++            for fn in files:
++                full = os.path.join(root, fn)
++                rel = os.path.relpath(full, src).replace(os.sep, '/')
++                size = os.path.getsize(full)
++                if rel in exist_map and exist_map[rel] == size:
++                    continue
++                key = prefix + rel
++                uri = 's3://%s/%s' % (db, key)
++                if args.dryrun:
++                    uni_print('(dryrun) upload: %s to %s\n' % (full, uri))
++                    continue
++                with open(full, 'rb') as f:
++                    data = f.read()
++                try:
++                    upload_bytes(client, db, key, data, build_put_headers(args))
++                    uni_print('upload: %s to %s\n' % (full, uri))
++                except ClientError as e:
++                    sys.stderr.write('upload failed: %s to %s %s\n' % (full, uri, str(e)))
++                    rc = 1
++        return rc
++
++    # s3 -> local
++    if src_is_s3 and not dst_is_s3:
++        sb, sk = split_s3_bucket_key(src)
++        prefix = sk
++        if prefix and not prefix.endswith('/'):
++            prefix += '/'
++        try:
++            contents, _ = client.list_objects_v2(sb, prefix, delimiter=None)
++        except ClientError as e:
++            sys.stderr.write('\n' + str(e) + '\n')
++            return 1
++        rc = 0
++        for c in contents:
++            rel = c['Key'][len(prefix):] if prefix else c['Key']
++            if not rel:
++                continue
++            outpath = os.path.join(dst, rel.replace('/', os.sep))
++            uri = 's3://%s/%s' % (sb, c['Key'])
++            need = True
++            if os.path.isfile(outpath):
++                if os.path.getsize(outpath) == c['Size']:
++                    need = False
++            if not need:
++                continue
++            if args.dryrun:
++                uni_print('(dryrun) download: %s to %s\n' % (uri, outpath))
++                continue
++            d = os.path.dirname(outpath)
++            if d and not os.path.isdir(d):
++                os.makedirs(d, exist_ok=True)
++            try:
++                data = client.get_object(sb, c['Key'])
++                with open(outpath, 'wb') as f:
++                    f.write(data)
++                uni_print('download: %s to %s\n' % (uri, outpath))
++            except ClientError as e:
++                sys.stderr.write('download failed: %s to %s %s\n' % (uri, outpath, str(e)))
++                rc = 1
++        return rc
++
++    # s3 -> s3
++    if src_is_s3 and dst_is_s3:
++        sb, sk = split_s3_bucket_key(src)
++        db, dk = split_s3_bucket_key(dst)
++        sprefix = sk
++        if sprefix and not sprefix.endswith('/'):
++            sprefix += '/'
++        dprefix = dk
++        if dprefix and not dprefix.endswith('/'):
++            dprefix += '/'
++        try:
++            contents, _ = client.list_objects_v2(sb, sprefix, delimiter=None)
++            dcontents, _ = client.list_objects_v2(db, dprefix, delimiter=None)
++        except ClientError as e:
++            sys.stderr.write('\n' + str(e) + '\n')
++            return 1
++        dmap = {}
++        for c in dcontents:
++            rel = c['Key'][len(dprefix):] if dprefix else c['Key']
++            dmap[rel] = c['Size']
++        rc = 0
++        for c in contents:
++            rel = c['Key'][len(sprefix):] if sprefix else c['Key']
++            if rel in dmap and dmap[rel] == c['Size']:
++                continue
++            dkey = dprefix + rel
++            suri = 's3://%s/%s' % (sb, c['Key'])
++            duri = 's3://%s/%s' % (db, dkey)
++            if args.dryrun:
++                uni_print('(dryrun) copy: %s to %s\n' % (suri, duri))
++                continue
++            try:
++                client.copy_object(db, dkey, sb, c['Key'])
++                uni_print('copy: %s to %s\n' % (suri, duri))
++            except ClientError as e:
++                sys.stderr.write('copy failed: %s to %s %s\n' % (suri, duri, str(e)))
++                rc = 1
++        return rc
++
++    sys.stderr.write('sync: unsupported local to local\n')
++    return 255
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 2:
++        sys.stderr.write('usage: aws s3 <command> [args...]\n')
++        return 2
++    if argv[1] != 's3':
++        sys.stderr.write("Invalid service. Only 's3' is supported.\n")
++        return 2
++    if len(argv) < 3:
++        sys.stderr.write('usage: aws s3 <command> [args...]\n')
++        return 2
++    sub = argv[2]
++    rest = argv[3:]
++    try:
++        if sub == 'ls':
++            return cmd_ls(rest)
++        elif sub == 'cp':
++            return cmd_cp(rest)
++        elif sub == 'mv':
++            return cmd_mv(rest)
++        elif sub == 'rm':
++            return cmd_rm(rest)
++        elif sub == 'sync':
++            return cmd_sync(rest)
++        else:
++            sys.stderr.write("Unknown s3 command: %s\n" % sub)
++            return 2
++    except ClientError as e:
++        sys.stderr.write(str(e) + '\n')
++        return 1
++    except BrokenPipeError:
++        return 0
++    except Exception as e:
++        sys.stderr.write('%s\n' % e)
++        return 1
++
++
++if __name__ == '__main__':
++    sys.exit(main())

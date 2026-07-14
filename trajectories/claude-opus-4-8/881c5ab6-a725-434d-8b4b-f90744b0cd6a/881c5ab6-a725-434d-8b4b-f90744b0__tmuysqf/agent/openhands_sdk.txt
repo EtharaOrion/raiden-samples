@@ -1,0 +1,2894 @@
+[07/13/26 18:19:49] INFO     Created new conversation               state.py:359
+                             3d0ec70a-f6f2-43c3-aa6a-295f36116e08               
+                             State: {'id':                                      
+                             UUID('3d0ec70a-f6f2-43c3-aa6a-295f3611             
+                             6e08'), 'workspace': {'working_dir':               
+                             '/workspace', 'kind':                              
+                             'LocalWorkspace'}, 'persistence_dir':              
+                             None, 'max_iterations': 1000,                      
+                             'stuck_detection': True,                           
+                             'execution_status':                                
+                             <ConversationExecutionStatus.IDLE:                 
+                             'idle'>, 'confirmation_policy':                    
+                             {'kind': 'NeverConfirm'},                          
+                             'security_analyzer': None,                         
+                             'activated_knowledge_skills': [],                  
+                             'blocked_actions': {},                             
+                             'blocked_messages': {},                            
+                             'last_user_message_id': None, 'stats':             
+                             {'usage_to_metrics': {}},                          
+                             'secret_registry': {'secret_sources':              
+                             {}}, 'agent_state': {}}                            
+                             Agent: {'llm': {'model':                           
+                             'anthropic/claude-opus-4-8',                       
+                             'api_key': SecretStr('**********'),                
+                             'base_url':                                        
+                             'http://host.docker.internal:8642',                
+                             'openrouter_site_url':                             
+                             'https://docs.all-hands.dev/',                     
+                             'openrouter_app_name': 'OpenHands',                
+                             'num_retries': 5, 'retry_multiplier':              
+                             8.0, 'retry_min_wait': 8,                          
+                             'retry_max_wait': 64, 'timeout': 300,              
+                             'max_message_chars': 30000,                        
+                             'max_input_tokens': 1000000,                       
+                             'max_output_tokens': 128000, 'stream':             
+                             False, 'drop_params': True,                        
+                             'modify_params': True,                             
+                             'disable_stop_word': False,                        
+                             'caching_prompt': True,                            
+                             'log_completions': False,                          
+                             'log_completions_folder':                          
+                             'logs/completions',                                
+                             'native_tool_calling': True,                       
+                             'reasoning_effort': 'high',                        
+                             'enable_encrypted_reasoning': True,                
+                             'prompt_cache_retention': '24h',                   
+                             'extended_thinking_budget': 200000,                
+                             'force_adaptive_thinking': False,                  
+                             'usage_id': 'default',                             
+                             'litellm_extra_body': {}}, 'tools':                
+                             [{'name': 'terminal', 'params': {}},               
+                             {'name': 'file_editor', 'params': {}},             
+                             {'name': 'task_tracker', 'params':                 
+                             {}}], 'mcp_config': {},                            
+                             'include_default_tools':                           
+                             ['FinishTool', 'ThinkTool'],                       
+                             'agent_context': {'skills': [],                    
+                             'load_user_skills': False,                         
+                             'load_public_skills': False,                       
+                             'current_datetime':                                
+                             datetime.datetime(2026, 7, 13, 18, 19,             
+                             49, 377497)},                                      
+                             'system_prompt_filename':                          
+                             'system_prompt.j2',                                
+                             'security_policy_filename':                        
+                             'security_policy.j2',                              
+                             'system_prompt_kwargs':                            
+                             {'llm_security_analyzer': True},                   
+                             'kind': 'Agent'}                                   
+Starting agent with instruction: # Build an `aws dynamodb` CLI
+
+## Application overview
+
+You will implement the following `aws dynamodb` commands:
+`dynamodb create-table`, `dynamodb delete-item`, `dynamodb delete-table`, `dynamodb ge...
+Using model: anthropic/claude-opus-4-8
+Max iterations per run: 1000
+Loaded 0 skills
+[07/13/26 18:19:49] INFO     TaskTrackerExecutor initialized   definition.py:161
+                             with save_dir: None                                
+[07/13/26 18:19:49] INFO     Auto-detected: Using                 factory.py:123
+                             SubprocessTerminal (tmux not                       
+                             available)                                         
+[07/13/26 18:19:49] INFO     Using shell:             subprocess_terminal.py:116
+                             /usr/bin/bash                                      
+[07/13/26 18:19:49] INFO     FileEditor initialized with cwd:       editor.py:95
+                             /workspace                                         
+[07/13/26 18:19:50] INFO     TerminalExecutor initialized with        impl.py:59
+                             working_dir: /workspace, username: None,           
+                             terminal_type: TerminalSession                     
+[07/13/26 18:19:50] INFO     Loaded 3 tools from spec: ['terminal',  base.py:341
+                             'file_editor', 'task_tracker']                     
+System Prompt ──────────────────────────────────────────────────────────────────
+
+System Prompt:
+You are OpenHands agent, a helpful AI assistant that can interact with a 
+computer to solve tasks.
+
+<ROLE>
+* Your primary role is to assist users by executing commands, modifying code, 
+and solving technical problems effectively. You should be thorough, methodical, 
+and prioritize quality over speed.
+* If the user asks a question, like "why is X happening", don't try to fix the 
+problem. Just give an answer to the question.
+</ROLE>
+
+<MEMORY>
+* Use `AGENTS.md` under the repository root as your persistent memory for 
+repository-specific knowledge and context.
+* Add important insights, patterns, and learnings to this file to improve future
+task performance.
+* This repository skill is automatically loaded for every conversation and helps
+maintain context across sessions.
+* For more information about skills, see: 
+https://docs.openhands.dev/overview/skills
+</MEMORY>
+
+<EFFICIENCY>
+* Each action you take is somewhat expensive. Wherever possible, combine 
+multiple actions into a single action, e.g. combine multiple bash commands into 
+one, using sed and grep to edit/view multiple files at once.
+* When exploring the codebase, use efficient tools like find, grep, and git 
+commands with appropriate filters to minimize unnecessary operations.
+</EFFICIENCY>
+
+<FILE_SYSTEM_GUIDELINES>
+* When a user provides a file path, do NOT assume it's relative to the current 
+working directory. First explore the file system to locate the file before 
+working on it.
+* If asked to edit a file, edit the file directly, rather than creating a new 
+file with a different filename.
+* For global search-and-replace operations, consider using `sed` instead of 
+opening file editors multiple times.
+* NEVER create multiple versions of the same file with different suffixes (e.g.,
+file_test.py, file_fix.py, file_simple.py). Instead:
+  - Always modify the original file directly when making changes
+  - If you need to create a temporary file for testing, delete it once you've 
+confirmed your solution works
+  - If you decide a file you created is no longer useful, delete it instead of 
+creating a new version
+* Do NOT include documentation files explaining your changes in version control 
+unless the user explicitly requests it
+* When reproducing bugs or implementing fixes, use a single file rather than 
+creating multiple files with different versions
+</FILE_SYSTEM_GUIDELINES>
+
+<CODE_QUALITY>
+* Write clean, efficient code with minimal comments. Avoid redundancy in 
+comments: Do not repeat information that can be easily inferred from the code 
+itself.
+* When implementing solutions, focus on making the minimal changes needed to 
+solve the problem.
+* Before implementing any changes, first thoroughly understand the codebase 
+through exploration.
+* If you are adding a lot of code to a function or file, consider splitting the 
+function or file into smaller pieces when appropriate.
+* Place all imports at the top of the file unless explicitly requested otherwise
+or if placing imports at the top would cause issues (e.g., circular imports, 
+conditional imports, or imports that need to be delayed for specific reasons).
+</CODE_QUALITY>
+
+<VERSION_CONTROL>
+* If there are existing git user credentials already configured, use them and 
+add Co-authored-by: openhands <openhands@all-hands.dev> to any commits messages 
+you make. if a git config doesn't exist use "openhands" as the user.name and 
+"openhands@all-hands.dev" as the user.email by default, unless explicitly 
+instructed otherwise.
+* Exercise caution with git operations. Do NOT make potentially dangerous 
+changes (e.g., pushing to main, deleting repositories) unless explicitly asked 
+to do so.
+* When committing changes, use `git status` to see all modified files, and stage
+all files necessary for the commit. Use `git commit -a` whenever possible.
+* Do NOT commit files that typically shouldn't go into version control (e.g., 
+node_modules/, .env files, build directories, cache files, large binaries) 
+unless explicitly instructed by the user.
+* If unsure about committing certain files, check for the presence of .gitignore
+files or ask the user for clarification.
+* When running git commands that may produce paged output (e.g., `git diff`, 
+`git log`, `git show`), use `git --no-pager <command>` or set `GIT_PAGER=cat` to
+prevent the command from getting stuck waiting for interactive input.
+</VERSION_CONTROL>
+
+<PULL_REQUESTS>
+* **Important**: Do not push to the remote branch and/or start a pull request 
+unless explicitly asked to do so.
+* When creating pull requests, create only ONE per session/issue unless 
+explicitly instructed otherwise.
+* When working with an existing PR, update it with new commits rather than 
+creating additional PRs for the same issue.
+* When updating a PR, preserve the original PR title and purpose, updating 
+description only when necessary.
+</PULL_REQUESTS>
+
+<PROBLEM_SOLVING_WORKFLOW>
+1. EXPLORATION: Thoroughly explore relevant files and understand the context 
+before proposing solutions
+2. ANALYSIS: Consider multiple approaches and select the most promising one
+3. TESTING:
+   * For bug fixes: Create tests to verify issues before implementing fixes
+   * For new features: Consider test-driven development when appropriate
+   * Do NOT write tests for documentation changes, README updates, configuration
+files, or other non-functionality changes
+   * Do not use mocks in tests unless strictly necessary and justify their use 
+when they are used. You must always test real code paths in tests, NOT mocks.
+   * If the repository lacks testing infrastructure and implementing tests would
+require extensive setup, consult with the user before investing time in building
+testing infrastructure
+   * If the environment is not set up to run tests, consult with the user first 
+before investing time to install all dependencies
+4. IMPLEMENTATION:
+   * Make focused, minimal changes to address the problem
+   * Always modify existing files directly rather than creating new versions 
+with different suffixes
+   * If you create temporary files for testing, delete them after confirming 
+your solution works
+5. VERIFICATION: If the environment is set up to run tests, test your 
+implementation thoroughly, including edge cases. If the environment is not set 
+up to run tests, consult with the user first before investing time to run tests.
+</PROBLEM_SOLVING_WORKFLOW>
+
+<SELF_DOCUMENTATION>
+When the user directly asks about any of the following:
+- OpenHands capabilities (e.g., "can OpenHands do...", "does OpenHands have...")
+- what you're able to do in second person (e.g., "are you able...", "can 
+you...")
+- how to use a specific OpenHands feature or product
+- how to use the OpenHands SDK, CLI, GUI, or other OpenHands products
+
+Get accurate information from the official OpenHands documentation at 
+<https://docs.openhands.dev/>. The documentation includes:
+
+**OpenHands SDK** (`/sdk/*`): Python library for building AI agents; Getting 
+Started, Architecture, Guides (agent, llm, conversation, tools), API Reference
+**OpenHands CLI** (`/openhands/usage/run-openhands/cli-mode`): Command-line 
+interface
+**OpenHands GUI** (`/openhands/usage/run-openhands/local-setup`): Local GUI and 
+REST API
+**OpenHands Cloud** (`/openhands/usage/run-openhands/cloud`): Hosted solution 
+with integrations
+**OpenHands Enterprise**: Self-hosted deployment with extended support
+
+Always provide links to the relevant documentation pages for users who want to 
+learn more.
+</SELF_DOCUMENTATION>
+
+<SECURITY>
+# 🔐 Security Policy
+
+## OK to do without Explicit User Consent
+
+- Download and run code from a repository specified by a user
+- Open pull requests on the original repositories where the code is stored
+- Install and run popular packages from pypi, npm, or other package managers
+- Use APIs to work with GitHub or other platforms, unless the user asks 
+otherwise or your task requires browsing
+
+## Do only with Explicit User Consent
+
+- Upload code to anywhere other than the location where it was obtained from
+- Upload API keys or tokens anywhere, except when using them to authenticate 
+with the appropriate service
+
+## Never Do
+
+- Never perform any illegal activities, such as circumventing security to access
+a system that is not under your control or performing denial-of-service attacks 
+on external servers
+- Never run software to mine cryptocurrency
+
+## General Security Guidelines
+
+- Only use GITHUB_TOKEN and other credentials in ways the user has explicitly 
+requested and would expect
+</SECURITY>
+
+<SECURITY_RISK_ASSESSMENT>
+# Security Risk Policy
+When using tools that support the security_risk parameter, assess the safety 
+risk of your actions:
+
+- **LOW**: Safe, read-only actions.
+  - Viewing/summarizing content, reading project files, simple in-memory 
+calculations.
+- **MEDIUM**: Project-scoped edits or execution.
+  - Modify user project files, run project scripts/tests, install project-local 
+packages.
+- **HIGH**: System-level or untrusted operations.
+  - Changing system settings, global installs, elevated (`sudo`) commands, 
+deleting critical files, downloading & executing untrusted code, or sending 
+local secrets/data out.
+
+**Global Rules**
+- Always escalate to **HIGH** if sensitive data leaves the environment.
+</SECURITY_RISK_ASSESSMENT>
+
+<EXTERNAL_SERVICES>
+* When interacting with external services like GitHub, GitLab, or Bitbucket, use
+their respective APIs instead of browser-based interactions whenever possible.
+* Only resort to browser-based interactions with these services if specifically 
+requested by the user or if the required operation cannot be performed via API.
+</EXTERNAL_SERVICES>
+
+<ENVIRONMENT_SETUP>
+* When user asks you to run an application, don't stop if the application is not
+installed. Instead, please install the application and run the command again.
+* If you encounter missing dependencies:
+  1. First, look around in the repository for existing dependency files 
+(requirements.txt, pyproject.toml, package.json, Gemfile, etc.)
+  2. If dependency files exist, use them to install all dependencies at once 
+(e.g., `pip install -r requirements.txt`, `npm install`, etc.)
+  3. Only install individual packages directly if no dependency files are found 
+or if only specific packages are needed
+* Similarly, if you encounter missing dependencies for essential tools requested
+by the user, install them when possible.
+</ENVIRONMENT_SETUP>
+
+<TROUBLESHOOTING>
+* If you've made repeated attempts to solve a problem but tests still fail or 
+the user reports it's still broken:
+  1. Step back and reflect on 5-7 different possible sources of the problem
+  2. Assess the likelihood of each possible cause
+  3. Methodically address the most likely causes, starting with the highest 
+probability
+  4. Explain your reasoning process in your response to the user
+* When you run into any major issue while executing a plan from the user, please
+don't try to directly work around it. Instead, propose a new plan and confirm 
+with the user before proceeding.
+</TROUBLESHOOTING>
+
+<PROCESS_MANAGEMENT>
+* When terminating processes:
+  - Do NOT use general keywords with commands like `pkill -f server` or `pkill 
+-f python` as this might accidentally kill other important servers or processes
+  - Always use specific keywords that uniquely identify the target process
+  - Prefer using `ps aux` to find the exact process ID (PID) first, then kill 
+that specific PID
+  - When possible, use more targeted approaches like finding the PID from a 
+pidfile or using application-specific shutdown commands
+</PROCESS_MANAGEMENT>
+
+<IMPORTANT>
+* Try to follow the instructions exactly as given - don't make extra or fewer 
+actions if not asked.
+* Avoid unnecessary defensive programming; do not add redundant fallbacks or 
+default values — fail fast instead of masking misconfigurations.
+* When backward compatibility expectations are unclear, confirm with the user 
+before making changes that could break existing behavior.
+</IMPORTANT>
+
+Dynamic Context:
+<CURRENT_DATETIME>
+The current date and time is: 2026-07-13T18:19:49.377497
+</CURRENT_DATETIME>
+
+Tools Available: 5
+  - terminal: Execute a bash command in the terminal within a persistent shell 
+session....
+  Parameters: {"type": "object", "description": "Schema for bash command 
+execution.", "properties": {"command": {"type": "string", "description": "The 
+bash command to execute. Can be empty string to view additio...
+  - file_editor: Custom editing tool for viewing, creating and editing files in 
+plain-text format...
+  Parameters: {"type": "object", "description": "Schema for file editor 
+operations.", "properties": {"command": {"type": "string", "description": "The 
+commands to run. Allowed options are: `view`, `create`, `str...
+  - task_tracker: This tool provides structured task management capabilities for
+development workflows....
+  Parameters: {"type": "object", "description": "An action where the agent 
+writes or updates a task list for task management.", "properties": {"command": 
+{"type": "string", "description": "The command to execute...
+  - finish: Signals the completion of the current task or conversation....
+  Parameters: {"type": "object", "properties": {"message": {"type": "string", 
+"description": "Final message to send to the user."}}, "required": ["message"]}
+  - think: Use the tool to think about something. It will not obtain new 
+information or make any changes to the...
+  Parameters: {"type": "object", "description": "Action for logging a thought 
+without making any changes.", "properties": {"thought": {"type": "string", 
+"description": "The thought to log."}}, "required": ["thou...
+
+Message from User ──────────────────────────────────────────────────────────────
+
+# Build an `aws dynamodb` CLI
+
+## Application overview
+
+You will implement the following `aws dynamodb` commands:
+`dynamodb create-table`, `dynamodb delete-item`, `dynamodb delete-table`, 
+`dynamodb get-item`, `dynamodb list-tables`, `dynamodb query`, `dynamodb 
+update-item`.
+
+Your code is invoked as a subprocess:
+
+```bash
+aws dynamodb <command> [args...]
+```
+
+Dispatch on the `<command>` token so one program handles every subcommand
+above. State must remain consistent across commands so a sequence such as
+create-table, put-item, get-item, query behaves correctly end-to-end.
+
+## Commands
+
+### Command: `dynamodb create-table`
+
+Observed argv patterns:
+
+- `dynamodb create-table --table-name <string> --attribute-definitions 
+<oversized-value:65-chars> --key-schema <oversized-value:60-chars> 
+--billing-mode PAY_PER_REQUEST`
+- `dynamodb create-table --table-name <string>`
+- `dynamodb create-table --table-name <string> --attribute-definitions 
+AttributeName=id,AttributeType=S --key-schema AttributeName=id,KeyType=HASH 
+--billing-mode PROVISIONED --provisioned-throughput 
+ReadCapacityUnits=5,WriteCapacityUnits=5`
+- `dynamodb create-table --table-name <string_v1>`
+- `dynamodb create-table --table-name <string_v2>`
+- `dynamodb create-table --table-name <string_v3>`
+- `dynamodb create-table --table-name <string_v4>`
+- `dynamodb create-table --table-name <string_v5>`
+- `dynamodb create-table --table-name <string_v6>`
+- `dynamodb create-table --table-name <string_v7>`
+
+Documented flags: `--attribute-definitions`, `--billing-mode`, 
+`--deletion-protection-enabled`, `--global-secondary-indexes`, 
+`--global-table-settings-replication-mode`, `--global-table-source-arn`, 
+`--key-schema`, `--local-secondary-indexes`, `--on-demand-throughput`, 
+`--provisioned-throughput`, `--resource-policy`, `--sse-specification`, 
+`--stream-specification`, `--table-class`, `--table-name`, `--tags`, 
+`--warm-throughput`
+
+Flags observed: `--attribute-definitions`, `--billing-mode`, 
+`--deletion-protection-enabled`, `--global-secondary-indexes`, 
+`--global-table-settings-replication-mode`, `--global-table-source-arn`, 
+`--key-schema`, `--local-secondary-indexes`, `--on-demand-throughput`, 
+`--provisioned-throughput`, `--resource-policy`, `--sse-specification`, 
+`--stream-specification`, `--table-class`, `--table-name`, `--tags`, 
+`--warm-throughput`
+
+Behaviour & state expectations:
+
+- After successful creation the table appears in `list-tables`.
+- Re-creating an existing table name FAILS with `ResourceInUseException`.
+- `--billing-mode PAY_PER_REQUEST` is used; do NOT rely on 
+provisioned-throughput
+  behaviour (it is ignored by the sandbox).
+- `--key-schema` + `--attribute-definitions` must agree; a key attribute missing
+  from the definitions FAILS with `ValidationException`.
+
+Error cases:
+- `dynamodb create-table` -> exit `252`
+- `dynamodb create-table --table-name <string> --not-a-real-flag x` -> exit 
+`252`
+- `dynamodb create-table --table-name ` -> exit `252`
+- `dynamodb create-table --table-name <string> --attribute-definitions {not 
+valid json` -> exit `252`
+- `dynamodb create-table --table-name <string> --table-name <string>` -> exit 
+`252`
+- `dynamodb create-table --table-name <oversized-value:512-chars>` -> exit `252`
+- `dynamodb create-table --table-name <string>` -> exit `254`
+
+### Command: `dynamodb delete-item`
+
+Observed argv patterns:
+
+- `dynamodb delete-item --table-name <string> --key <json>`
+- `dynamodb delete-item --table-name <string> --key {"id":{"S":"never-existed"}}
+--condition-expression attribute_exists(id)`
+- `dynamodb delete-item --table-name <string_v1> --key <json_v1>`
+- `dynamodb delete-item --table-name <string_v2> --key <json_v2>`
+- `dynamodb delete-item --table-name <string_v3> --key <json_v3>`
+- `dynamodb delete-item --table-name <string_v4> --key <json_v4>`
+- `dynamodb delete-item --table-name <string_v5> --key <json_v5>`
+- `dynamodb delete-item --table-name <string_v6> --key <json_v6>`
+- `dynamodb delete-item --table-name <string_v7> --key <json_v7>`
+
+Documented flags: `--condition-expression`, `--conditional-operator`, 
+`--expected`, `--expression-attribute-names`, `--expression-attribute-values`, 
+`--key`, `--return-consumed-capacity`, `--return-item-collection-metrics`, 
+`--return-values`, `--return-values-on-condition-check-failure`, `--table-name`
+
+Flags observed: `--condition-expression`, `--conditional-operator`, 
+`--expected`, `--expression-attribute-names`, `--expression-attribute-values`, 
+`--key`, `--return-consumed-capacity`, `--return-item-collection-metrics`, 
+`--return-values`, `--return-values-on-condition-check-failure`, `--table-name`
+
+Behaviour & state expectations:
+
+- After success `get-item` on the key returns no `Item`.
+- Deleting a non-existent key SUCCEEDS silently (idempotent).
+- A failing `--condition-expression` FAILS with 
+`ConditionalCheckFailedException`.
+
+Error cases:
+- `dynamodb delete-item --table-name <string> --key <json>` -> exit `254`
+- `dynamodb delete-item --key <json>` -> exit `252`
+- `dynamodb delete-item --table-name <string>` -> exit `252`
+- `dynamodb delete-item --table-name <string> --key <json> --not-a-real-flag x` 
+-> exit `252`
+- `dynamodb delete-item --table-name  --key <json>` -> exit `252`
+- `dynamodb delete-item --table-name <string> --key <json> 
+--attribute-definitions {not valid json` -> exit `252`
+- `dynamodb delete-item --table-name <string> --key <json> --table-name 
+<string>` -> exit `252`
+- `dynamodb delete-item --table-name <oversized-value:512-chars> --key <json>` 
+-> exit `252`
+
+### Command: `dynamodb delete-table`
+
+Observed argv patterns:
+
+- `dynamodb delete-table --table-name <string>`
+- `dynamodb delete-table --table-name <string_v1>`
+- `dynamodb delete-table --table-name <string_v2>`
+- `dynamodb delete-table --table-name <string_v3>`
+- `dynamodb delete-table --table-name <string_v4>`
+- `dynamodb delete-table --table-name <string_v5>`
+- `dynamodb delete-table --table-name <string_v6>`
+- `dynamodb delete-table --table-name <string_v7>`
+
+Documented flags: `--table-name`
+
+Flags observed: `--table-name`
+
+Behaviour & state expectations:
+
+- After success the table no longer appears in `list-tables`.
+- Deleting a non-existent table FAILS with `ResourceNotFoundException`.
+
+Error cases:
+- `dynamodb delete-table --table-name <string>` -> exit `254`
+- `dynamodb delete-table` -> exit `252`
+- `dynamodb delete-table --table-name <string> --not-a-real-flag x` -> exit 
+`252`
+- `dynamodb delete-table --table-name ` -> exit `252`
+- `dynamodb delete-table --table-name <string> --attribute-definitions {not 
+valid json` -> exit `252`
+- `dynamodb delete-table --table-name <string> --table-name <string>` -> exit 
+`252`
+- `dynamodb delete-table --table-name <oversized-value:512-chars>` -> exit `252`
+
+### Command: `dynamodb get-item`
+
+Observed argv patterns:
+
+- `dynamodb get-item --table-name <string> --key <json>`
+- `dynamodb get-item --table-name <string> --key {"id":{"S":"k1"}} 
+--consistent-read`
+- `dynamodb get-item --table-name <string_v1> --key <json_v1>`
+- `dynamodb get-item --table-name <string_v2> --key <json_v2>`
+- `dynamodb get-item --table-name <string_v3> --key <json_v3>`
+- `dynamodb get-item --table-name <string_v4> --key <json_v4>`
+- `dynamodb get-item --table-name <string_v5> --key <json_v5>`
+- `dynamodb get-item --table-name <string_v6> --key <json_v6>`
+- `dynamodb get-item --table-name <string_v7> --key <json_v7>`
+
+Documented flags: `--attributes-to-get`, `--consistent-read`, 
+`--expression-attribute-names`, `--key`, `--projection-expression`, 
+`--return-consumed-capacity`, `--table-name`
+
+Flags observed: `--attributes-to-get`, `--consistent-read`, 
+`--expression-attribute-names`, `--key`, `--projection-expression`, 
+`--return-consumed-capacity`, `--table-name`
+
+Behaviour & state expectations:
+
+- Returns `{"Item": ...}` for an existing key; when the key is absent the
+  response has NO `Item` member (exit 0).
+- Reading from a missing table FAILS with `ResourceNotFoundException`.
+- Reads are strongly consistent.
+
+Error cases:
+- `dynamodb get-item --table-name <string> --key <json>` -> exit `254`
+- `dynamodb get-item --key <json>` -> exit `252`
+- `dynamodb get-item --table-name <string>` -> exit `252`
+- `dynamodb get-item --table-name <string> --key <json> --not-a-real-flag x` -> 
+exit `252`
+- `dynamodb get-item --table-name  --key <json>` -> exit `252`
+- `dynamodb get-item --table-name <string> --key <json> --attribute-definitions 
+{not valid json` -> exit `252`
+- `dynamodb get-item --table-name <string> --key <json> --table-name <string>` 
+-> exit `252`
+- `dynamodb get-item --table-name <oversized-value:512-chars> --key <json>` -> 
+exit `252`
+
+### Command: `dynamodb list-tables`
+
+Observed argv patterns:
+
+- `dynamodb list-tables --limit 1`
+- `dynamodb list-tables`
+
+Documented flags: `--exclusive-start-table-name`, `--limit`
+
+Flags observed: `--exclusive-start-table-name`, `--limit`
+
+Behaviour & state expectations:
+
+- Returns the set of existing table names on stdout as JSON.
+- With no tables, succeeds (exit 0) with an empty `TableNames` list.
+- Assert membership as a set — never rely on ordering.
+
+### Command: `dynamodb query`
+
+Observed argv patterns:
+
+- `dynamodb query --table-name <string>`
+- `dynamodb query --table-name <string> --key-condition-expression id = :pk 
+--expression-attribute-values {":pk":{"S":"k1"}}`
+- `dynamodb query --table-name <string> --key-condition-expression id = :pk 
+--expression-attribute-values {":pk":{"S":"k1"}} --limit 1`
+- `dynamodb query --table-name <string_v1>`
+- `dynamodb query --table-name <string_v2>`
+- `dynamodb query --table-name <string_v3>`
+- `dynamodb query --table-name <string_v4>`
+- `dynamodb query --table-name <string_v5>`
+- `dynamodb query --table-name <string_v6>`
+- `dynamodb query --table-name <string_v7>`
+
+Documented flags: `--attributes-to-get`, `--conditional-operator`, 
+`--consistent-read`, `--exclusive-start-key`, `--expression-attribute-names`, 
+`--expression-attribute-values`, `--filter-expression`, `--index-name`, 
+`--key-condition-expression`, `--key-conditions`, `--limit`, 
+`--projection-expression`, `--query-filter`, `--return-consumed-capacity`, 
+`--scan-index-forward`, `--select`, `--table-name`
+
+Flags observed: `--attributes-to-get`, `--conditional-operator`, 
+`--consistent-read`, `--exclusive-start-key`, `--expression-attribute-names`, 
+`--expression-attribute-values`, `--filter-expression`, `--index-name`, 
+`--key-condition-expression`, `--key-conditions`, `--limit`, 
+`--projection-expression`, `--query-filter`, `--return-consumed-capacity`, 
+`--scan-index-forward`, `--select`, `--table-name`
+
+Behaviour & state expectations:
+
+- Returns items whose partition key matches the `--key-condition-expression`
+  (e.g. `pk = :v`), as `Items` on stdout.
+- Assert result membership as an order-insensitive set unless a sort-key range
+  is specified.
+- Querying on a non-key attribute in the key condition FAILS with 
+`ValidationException`.
+
+Error cases:
+- `dynamodb query --table-name <string>` -> exit `254`
+- `dynamodb query` -> exit `252`
+- `dynamodb query --table-name <string> --not-a-real-flag x` -> exit `252`
+- `dynamodb query --table-name ` -> exit `252`
+- `dynamodb query --table-name <string> --attribute-definitions {not valid json`
+-> exit `252`
+- `dynamodb query --table-name <string> --table-name <string>` -> exit `252`
+- `dynamodb query --table-name <oversized-value:512-chars>` -> exit `252`
+
+### Command: `dynamodb update-item`
+
+Observed argv patterns:
+
+- `dynamodb update-item --table-name <string> --key <json>`
+- `dynamodb update-item --table-name <string> --key {"id":{"S":"k1"}} 
+--update-expression SET v = :v --expression-attribute-values 
+{":v":{"S":"updated"}}`
+- `dynamodb update-item --table-name <string> --key {"id":{"S":"k1"}} 
+--update-expression ADD c :inc --expression-attribute-values {":inc":{"N":"1"}}`
+- `dynamodb update-item --table-name <string_v1> --key <json_v1>`
+- `dynamodb update-item --table-name <string_v2> --key <json_v2>`
+- `dynamodb update-item --table-name <string_v3> --key <json_v3>`
+- `dynamodb update-item --table-name <string_v4> --key <json_v4>`
+- `dynamodb update-item --table-name <string_v5> --key <json_v5>`
+- `dynamodb update-item --table-name <string_v6> --key <json_v6>`
+- `dynamodb update-item --table-name <string_v7> --key <json_v7>`
+
+Documented flags: `--attribute-updates`, `--condition-expression`, 
+`--conditional-operator`, `--expected`, `--expression-attribute-names`, 
+`--expression-attribute-values`, `--key`, `--return-consumed-capacity`, 
+`--return-item-collection-metrics`, `--return-values`, 
+`--return-values-on-condition-check-failure`, `--table-name`, 
+`--update-expression`
+
+Flags observed: `--attribute-updates`, `--condition-expression`, 
+`--conditional-operator`, `--expected`, `--expression-attribute-names`, 
+`--expression-attribute-values`, `--key`, `--return-consumed-capacity`, 
+`--return-item-collection-metrics`, `--return-values`, 
+`--return-values-on-condition-check-failure`, `--table-name`, 
+`--update-expression`
+
+Behaviour & state expectations:
+
+- Applies an `UpdateExpression` (e.g. `SET #s = :v`) with
+  `--expression-attribute-names` / `--expression-attribute-values`; afterward
+  `get-item` reflects the change.
+- A reserved word used unescaped in the expression FAILS with 
+`ValidationException`
+  (use `--expression-attribute-names` to alias reserved words like `Status`).
+- A failing `--condition-expression` FAILS with 
+`ConditionalCheckFailedException`
+  and does NOT mutate the item.
+
+Error cases:
+- `dynamodb update-item --table-name <string> --key <json>` -> exit `254`
+- `dynamodb update-item --key <json>` -> exit `252`
+- `dynamodb update-item --table-name <string>` -> exit `252`
+- `dynamodb update-item --table-name <string> --key <json> --not-a-real-flag x` 
+-> exit `252`
+- `dynamodb update-item --table-name  --key <json>` -> exit `252`
+- `dynamodb update-item --table-name <string> --key <json> 
+--attribute-definitions {not valid json` -> exit `252`
+- `dynamodb update-item --table-name <string> --key <json> --table-name 
+<string>` -> exit `252`
+- `dynamodb update-item --table-name <oversized-value:512-chars> --key <json>` 
+-> exit `252`
+
+## Cross-command behavior
+
+State must remain consistent across the command set:
+
+- After `create-table`, the table appears in `list-tables`.
+- After `delete-item`, `get-item` on the key returns no `Item`.
+- After `delete-table`, the table disappears from `list-tables`.
+- `get-item` reflects exactly the cumulative effect of prior writes/updates.
+- `query` returns exactly the items previously written under the partition key.
+- After `update-item`, `get-item` reflects the mutated attributes.
+- Reads are strongly consistent: a write's effect is visible to the very next 
+read of the same key.
+
+## Data model notes
+
+- Item and key values use DynamoDB AttributeValue form; **numbers are JSON
+  strings** (`{"N": "5"}`).
+- Tables use on-demand capacity (`PAY_PER_REQUEST`).
+
+## Implementation constraints
+
+- Your submission may be written in any language available in the image.
+  Use only what the image already provides; no additional packages may be
+  fetched.
+- Do not import `awscli` or shell out to the real `aws` binary.
+- AWS credentials and endpoint are set in the environment; do not override
+  the service address, region, or credentials in code.
+- Success output (JSON) goes to **stdout**; errors go to **stderr**. Do not
+  mix them.
+- Do not surface raw library tracebacks; print a brief user-facing error
+  string instead.
+- Do not fabricate flags that do not exist upstream. Do not validate table
+  names client-side; the service rejects malformed input with
+  `ValidationException`.
+- Your submission must be an executable named `aws` on `$PATH`. It may be
+  written in any language. The image provides `/workspace/submission/` first
+  on `$PATH` as a convenient writable install location, but any directory on
+  `$PATH` is acceptable. Helper files may live alongside it.
+
+## Output contract
+
+A correct implementation produces output in the *shape* described below,
+names the *class* of any error reported, uses the documented exit-code
+set, and never surfaces a runtime stack trace. Specific verbs and the
+exact wording of any message are deliberately not enumerated here: derive
+them from the underlying DynamoDB service semantics and standard
+`aws dynamodb` conventions.
+
+### stdout (success path)
+
+- A successful command writes the operation's DynamoDB JSON response
+  document to stdout (parseable with `json.loads`).
+- Assertions are on JSON semantic content, never on key order, whitespace,
+  or any textual preamble.
+- stderr is empty on success.
+
+### stderr (failure path)
+
+- stdout is empty on failure.
+- A human-readable error line is written to stderr that identifies the
+  failure *class*. Any of the following shapes is acceptable:
+  - the underlying AWS service error envelope:
+    `An error occurred (<ErrorCode>) when calling the <Operation> operation: 
+<message>`
+  - a bare `<ErrorCode>: <message>` line naming the DynamoDB error code
+    (for example, `ResourceNotFoundException`, `ResourceInUseException`,
+    `ConditionalCheckFailedException`, `ValidationException`)
+  - a client-side usage-error line whose prefix names the failure class
+    (for example, `usage: ...`, `Parameter validation failed: ...`,
+    `Unknown options: ...`)
+- Tests match the failure *class* against one of these shapes — not
+  verbatim wording — so any spec-compliant phrasing is accepted.
+- No runtime stack trace is emitted under any condition.
+
+### Exit codes
+
+The exit code on termination is one of `{0, 1, 252, 254, 255}`:
+
+- `0` — success
+- `1` — application error (a DynamoDB operation was attempted and failed)
+- `252` — parameter/usage error (unknown flag, missing/extra argument,
+  malformed value)
+- `254` — service-modeled error (the service returned a modeled exception
+  such as `ResourceNotFoundException`)
+- `255` — other or general error
+
+Tests only check `returncode != 0` on failure; any non-zero code in this set
+is acceptable.
+
+Tokens: ↑ input 0 • cache hit N/A • ↓ output 0 • $ 0.00
+
+Agent Action ───────────────────────────────────────────────────────────────────
+
+Summary: Explore environment: PATH, workspace, python, aws
+
+Thought:
+I'll start by exploring the environment to understand what's available.
+
+$ echo "PATH=$PATH"; echo "---"; ls -la /workspace/; echo "---submission---"; ls
+-la /workspace/submission/ 2>/dev/null; echo "---which aws---"; which aws; echo 
+"---python---"; which python3 python; python3 --version
+
+Tokens: ↑ input 17.71K • cache hit 0.00% • ↓ output 932 • $ 0.1340
+
+Agent Action ───────────────────────────────────────────────────────────────────
+
+Summary: Check AWS env vars and boto3 availability
+
+$ env | grep -iE "aws|dynamo|endpoint|region|access|secret" | sed 
+'s/\(SECRET[^=]*=\).*/\1***/;s/\(ACCESS[^=]*=\).*/\1***/'; echo "---boto3---"; 
+python3 -c "import boto3; print(boto3.__version__)" 2>&1 | head
+
+Tokens: ↑ input 17.71K • cache hit 0.00% • ↓ output 932 • $ 0.1340
+
+Observation ────────────────────────────────────────────────────────────────────
+
+Tool: terminal
+Result:
+[?2004lPATH=/workspace/submission:/opt/cargo/bin:/usr/local/go/bin:/opt/go/bin:/
+usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+---
+total 16
+drwxr-xr-x 1 root root 4096 Jul 10 08:28 [0m[01;34m.[0m
+drwxr-xr-x 1 root root 4096 Jul 13 18:19 [01;34m..[0m
+drwxr-xr-x 8 root root 4096 Jul 10 08:28 [01;34m.git[0m
+drwxr-xr-x 2 root root 4096 Jul 10 08:28 [01;34msubmission[0m
+---submission---
+total 8
+drwxr-xr-x 2 root root 4096 Jul 10 08:28 [0m[01;34m.[0m
+drwxr-xr-x 1 root root 4096 Jul 10 08:28 [01;34m..[0m
+-rw-r--r-- 1 root root    0 Jul 10 08:28 .gitkeep
+---which aws---
+---python---
+/usr/local/bin/python3
+/usr/local/bin/python
+Python 3.12.3
+[?2004h
+
+📁 Working directory: /workspace
+🐍 Python interpreter: /usr/local/bin/python
+✅ Exit code: 0
+
+Observation ────────────────────────────────────────────────────────────────────
+
+Tool: terminal
+Result:
+[?2004lAWS_EC2_METADATA_DISABLED=true
+AWS_DEFAULT_REGION=us-east-1
+AWS_ENDPOINT_URL_DYNAMODB=http://ddb:8000
+AWS_PAGER=
+AWS_SECRET_ACCESS_KEY=***
+AWS_ACCESS_KEY_ID=***
+AWS_ENDPOINT_URL=http://ddb:8000
+---boto3---
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+ModuleNotFoundError: No module named 'boto3'
+[?2004h
+
+📁 Working directory: /workspace
+🐍 Python interpreter: /usr/local/bin/python
+✅ Exit code: 0
+
+Agent Action ───────────────────────────────────────────────────────────────────
+
+Summary: Test connectivity to DynamoDB endpoint
+
+Thought:
+There's a real DynamoDB Local endpoint at `http://ddb:8000` but no boto3. I'll 
+need to implement AWS SigV4 signing with stdlib. Let me verify connectivity.
+
+$ python3 -c "import urllib.request,json; print('urllib ok')"; echo "---curl 
+connectivity---"; curl -s -m 5 -X POST http://ddb:8000/ -H "Content-Type: 
+application/x-amz-json-1.0" -H "X-Amz-Target: DynamoDB_20120810.ListTables" -d 
+'{}' ; echo; echo "exit=$?"
+
+Tokens: ↑ input 37.16K • cache hit 47.65% • ↓ output 1.33K • $ 0.1637
+
+Observation ────────────────────────────────────────────────────────────────────
+
+Tool: terminal
+Result:
+[?2004lurllib ok
+---curl connectivity---
+{"__type":"com.amazonaws.dynamodb.v20120810#MissingAuthenticationToken","Message
+":"Request must contain either a valid (registered) AWS access key ID or X.509 
+certificate."}
+exit=0
+[?2004h
+
+📁 Working directory: /workspace
+🐍 Python interpreter: /usr/local/bin/python
+✅ Exit code: 0
+
+Agent Action ───────────────────────────────────────────────────────────────────
+
+Summary: Plan implementation of aws dynamodb CLI
+
+Thought:
+The endpoint is DynamoDB Local requiring SigV4 auth, and there's no boto3. I'll 
+implement a stdlib-only `aws` CLI that signs requests with SigV4 and talks to 
+the endpoint. Let me plan the work.
+
+📋 Update Task List (5 tasks)
+
+Tokens: ↑ input 57.18K • cache hit 64.99% • ↓ output 19.63K • $ 0.6346
+
+Observation ────────────────────────────────────────────────────────────────────
+
+Tool: task_tracker
+Result:
+✅ Task list updated: 5 todo
+
+⏳ 1. Implement SigV4 signing + HTTP client (stdlib only)
+⏳ 2. Implement argv parser with per-command flag specs, error handling (252)
+⏳ 3. Implement value serialization (json/shorthand/struct/list)
+⏳ 4. Dispatch commands to DynamoDB API, map errors to exit codes
+⏳ 5. Install as executable /workspace/submission/aws and test end-to-end
+
+Agent Action ───────────────────────────────────────────────────────────────────
+
+Summary: Create the aws dynamodb CLI implementation
+
+Thought:
+Now let me write the implementation:
+
+Action: FileEditorAction
+
+Arguments:
+  command: "create"
+  path: "/workspace/submission/aws"
+  file_text: 
+    #!/usr/bin/env python3
+    """Minimal `aws dynamodb` CLI implemented with the Python standard library.
+    
+    Dispatches on the dynamodb subcommand, translates CLI flags into DynamoDB
+    JSON (1.0) API requests, signs them with AWS SigV4, and talks to the
+    endpoint configured in the environment.
+    """
+    
+    import sys
+    import os
+    import json
+    import hashlib
+    import hmac
+    import datetime
+    import urllib.request
+    import urllib.error
+    from urllib.parse import urlparse
+    
+    
+    # 
+---------------------------------------------------------------------------
+    # Error types + exit codes
+    # 
+---------------------------------------------------------------------------
+    EXIT_OK = 0
+    EXIT_USAGE = 252        # parameter / usage error
+    EXIT_SERVICE = 254      # service-modeled error
+    EXIT_GENERAL = 255      # other/general error
+    
+    
+    class UsageError(Exception):
+        """Client-side parameter/usage error -> exit 252."""
+    
+    
+    class ServiceError(Exception):
+        def __init__(self, code, message, operation):
+            self.code = code
+            self.message = message
+            self.operation = operation
+            super().__init__(message)
+    
+    
+    # 
+---------------------------------------------------------------------------
+    # Flag definitions.  flag -> (RequestParamName, kind)
+    # 
+---------------------------------------------------------------------------
+    DEF = {
+        '--table-name': ('TableName', 'str'),
+        '--attribute-definitions': ('AttributeDefinitions', 'structlist'),
+        '--key-schema': ('KeySchema', 'structlist'),
+        '--billing-mode': ('BillingMode', 'str'),
+        '--provisioned-throughput': ('ProvisionedThroughput', 'throughput'),
+        '--on-demand-throughput': ('OnDemandThroughput', 'struct'),
+        '--warm-throughput': ('WarmThroughput', 'struct'),
+        '--sse-specification': ('SSESpecification', 'struct'),
+        '--stream-specification': ('StreamSpecification', 'struct'),
+        '--table-class': ('TableClass', 'str'),
+        '--deletion-protection-enabled': ('DeletionProtectionEnabled', 'bool'),
+        '--global-secondary-indexes': ('GlobalSecondaryIndexes', 'jsonval'),
+        '--local-secondary-indexes': ('LocalSecondaryIndexes', 'jsonval'),
+        '--resource-policy': ('ResourcePolicy', 'str'),
+        '--tags': ('Tags', 'structlist'),
+        '--global-table-settings-replication-mode':
+            ('GlobalTableSettingsReplicationMode', 'str'),
+        '--global-table-source-arn': ('GlobalTableSourceArn', 'str'),
+    
+        '--key': ('Key', 'jsonval'),
+        '--item': ('Item', 'jsonval'),
+        '--condition-expression': ('ConditionExpression', 'str'),
+        '--conditional-operator': ('ConditionalOperator', 'str'),
+        '--expected': ('Expected', 'jsonval'),
+        '--expression-attribute-names': ('ExpressionAttributeNames', 'namemap'),
+        '--expression-attribute-values': ('ExpressionAttributeValues', 
+'jsonval'),
+        '--return-consumed-capacity': ('ReturnConsumedCapacity', 'str'),
+        '--return-item-collection-metrics': ('ReturnItemCollectionMetrics', 
+'str'),
+        '--return-values': ('ReturnValues', 'str'),
+        '--return-values-on-condition-check-failure':
+            ('ReturnValuesOnConditionCheckFailure', 'str'),
+    
+        '--attributes-to-get': ('AttributesToGet', 'liststr'),
+        '--consistent-read': ('ConsistentRead', 'bool'),
+        '--projection-expression': ('ProjectionExpression', 'str'),
+    
+        '--update-expression': ('UpdateExpression', 'str'),
+        '--attribute-updates': ('AttributeUpdates', 'jsonval'),
+    
+        '--limit': ('Limit', 'int'),
+        '--exclusive-start-table-name': ('ExclusiveStartTableName', 'str'),
+    
+        '--exclusive-start-key': ('ExclusiveStartKey', 'jsonval'),
+        '--filter-expression': ('FilterExpression', 'str'),
+        '--index-name': ('IndexName', 'str'),
+        '--key-condition-expression': ('KeyConditionExpression', 'str'),
+        '--key-conditions': ('KeyConditions', 'jsonval'),
+        '--query-filter': ('QueryFilter', 'jsonval'),
+        '--scan-index-forward': ('ScanIndexForward', 'bool'),
+        '--select': ('Select', 'str'),
+    }
+    
+    # command -> (Operation, [documented flags], [required flags])
+    COMMANDS = {
+        'create-table': ('CreateTable', [
+            '--attribute-definitions', '--billing-mode',
+            '--deletion-protection-enabled', '--global-secondary-indexes',
+            '--global-table-settings-replication-mode', 
+'--global-table-source-arn',
+            '--key-schema', '--local-secondary-indexes', 
+'--on-demand-throughput',
+            '--provisioned-throughput', '--resource-policy', 
+'--sse-specification',
+            '--stream-specification', '--table-class', '--table-name', '--tags',
+            '--warm-throughput'], ['--table-name']),
+        'delete-item': ('DeleteItem', [
+            '--condition-expression', '--conditional-operator', '--expected',
+            '--expression-attribute-names', '--expression-attribute-values',
+            '--key', '--return-consumed-capacity',
+            '--return-item-collection-metrics', '--return-values',
+            '--return-values-on-condition-check-failure', '--table-name'],
+            ['--table-name', '--key']),
+        'delete-table': ('DeleteTable', ['--table-name'], ['--table-name']),
+        'get-item': ('GetItem', [
+            '--attributes-to-get', '--consistent-read',
+            '--expression-attribute-names', '--key', '--projection-expression',
+            '--return-consumed-capacity', '--table-name'],
+            ['--table-name', '--key']),
+        'list-tables': ('ListTables',
+                        ['--exclusive-start-table-name', '--limit'], []),
+        'put-item': ('PutItem', [
+            '--condition-expression', '--conditional-operator', '--expected',
+            '--expression-attribute-names', '--expression-attribute-values',
+            '--item', '--return-consumed-capacity',
+            '--return-item-collection-metrics', '--return-values',
+            '--return-values-on-condition-check-failure', '--table-name'],
+            ['--table-name', '--item']),
+        'query': ('Query', [
+            '--attributes-to-get', '--conditional-operator', 
+'--consistent-read',
+            '--exclusive-start-key', '--expression-attribute-names',
+            '--expression-attribute-values', '--filter-expression', 
+'--index-name',
+            '--key-condition-expression', '--key-conditions', '--limit',
+            '--projection-expression', '--query-filter', 
+'--return-consumed-capacity',
+            '--scan-index-forward', '--select', '--table-name'], 
+['--table-name']),
+        'update-item': ('UpdateItem', [
+            '--attribute-updates', '--condition-expression', 
+'--conditional-operator',
+            '--expected', '--expression-attribute-names',
+            '--expression-attribute-values', '--key', 
+'--return-consumed-capacity',
+            '--return-item-collection-metrics', '--return-values',
+            '--return-values-on-condition-check-failure', '--table-name',
+            '--update-expression'], ['--table-name', '--key']),
+    }
+    
+    BOOL_FLAGS = {'--consistent-read', '--scan-index-forward',
+                  '--deletion-protection-enabled'}
+    
+    
+    # 
+---------------------------------------------------------------------------
+    # Value parsing helpers
+    # 
+---------------------------------------------------------------------------
+    def parse_json(text):
+        try:
+            return json.loads(text)
+        except (ValueError, TypeError):
+            raise UsageError("Parameter validation failed: invalid JSON value")
+    
+    
+    def parse_one_struct(text):
+        text = text.strip()
+        if text.startswith('{') or text.startswith('['):
+            return parse_json(text)
+        out = {}
+        for part in text.split(','):
+            if '=' not in part:
+                raise UsageError("Parameter validation failed: invalid 
+shorthand")
+            k, v = part.split('=', 1)
+            out[k.strip()] = v.strip()
+        return out
+    
+    
+    def parse_struct_list(tokens):
+        if len(tokens) == 1:
+            t = tokens[0].strip()
+            if t.startswith('[') or t.startswith('{'):
+                val = parse_json(t)
+                return val if isinstance(val, list) else [val]
+        return [parse_one_struct(t) for t in tokens]
+    
+    
+    def parse_name_map(text):
+        text = text.strip()
+        if text.startswith('{'):
+            return parse_json(text)
+        out = {}
+        for part in text.split(','):
+            if '=' not in part:
+                raise UsageError("Parameter validation failed: invalid 
+shorthand")
+            k, v = part.split('=', 1)
+            out[k.strip()] = v.strip()
+        return out
+    
+    
+    def coerce_numeric(d, keys):
+        for k in keys:
+            if k in d and isinstance(d[k], str):
+                try:
+                    d[k] = int(d[k])
+                except ValueError:
+                    try:
+                        d[k] = float(d[k])
+                    except ValueError:
+                        pass
+        return d
+    
+    
+    def build_value(kind, tokens):
+        if kind == 'str':
+            return tokens[0]
+        if kind == 'int':
+            try:
+                return int(tokens[0])
+            except ValueError:
+                raise UsageError("Parameter validation failed: invalid integer")
+        if kind == 'jsonval':
+            return parse_json(tokens[0])
+        if kind == 'namemap':
+            return parse_name_map(tokens[0])
+        if kind == 'liststr':
+            return list(tokens)
+        if kind == 'structlist':
+            return parse_struct_list(tokens)
+        if kind == 'throughput':
+            d = parse_one_struct(tokens[0])
+            return coerce_numeric(d, ('ReadCapacityUnits', 
+'WriteCapacityUnits'))
+        if kind == 'struct':
+            return parse_one_struct(tokens[0])
+        raise UsageError("internal: unknown kind")
+    
+    
+    # 
+---------------------------------------------------------------------------
+    # Argv parsing
+    # 
+---------------------------------------------------------------------------
+    LIST_KINDS = {'liststr', 'structlist'}
+    
+    
+    def parse_args(command, tokens):
+        op, allowed, required = COMMANDS[command]
+        allowed_set = set(allowed)
+    
+        request = {}
+        seen = set()
+        i = 0
+        n = len(tokens)
+        while i < n:
+            tok = tokens[i]
+            if not tok.startswith('--'):
+                raise UsageError("usage: unexpected argument: %s" % tok)
+            if tok not in DEF or tok not in allowed_set:
+                raise UsageError("Unknown options: %s" % tok)
+            param, kind = DEF[tok]
+            if param in seen:
+                raise UsageError("usage: duplicate option: %s" % tok)
+            seen.add(param)
+    
+            if tok in BOOL_FLAGS:
+                request[param] = True
+                i += 1
+                continue
+    
+            is_list = kind in LIST_KINDS
+            if is_list:
+                vals = []
+                j = i + 1
+                while j < n and not tokens[j].startswith('--'):
+                    vals.append(tokens[j])
+                    j += 1
+                if not vals:
+                    raise UsageError("usage: option %s requires a value" % tok)
+                request[param] = build_value(kind, vals)
+                i = j
+            else:
+                if i + 1 >= n or tokens[i + 1].startswith('--'):
+                    raise UsageError("usage: option %s requires a value" % tok)
+                request[param] = build_value(kind, [tokens[i + 1]])
+                i += 2
+    
+        for req in required:
+            rparam = DEF[req][0]
+            if rparam not in request:
+                raise UsageError("usage: missing required option: %s" % req)
+    
+        return op, request
+    
+    
+    # 
+---------------------------------------------------------------------------
+    # SigV4 signing + HTTP
+    # 
+---------------------------------------------------------------------------
+    def _sign(key, msg):
+        return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).digest()
+    
+    
+    def call(operation, request):
+        endpoint = (os.environ.get('AWS_ENDPOINT_URL_DYNAMODB')
+                    or os.environ.get('AWS_ENDPOINT_URL')
+                    or 'http://localhost:8000')
+        region = (os.environ.get('AWS_REGION')
+                  or os.environ.get('AWS_DEFAULT_REGION') or 'us-east-1')
+        access_key = os.environ.get('AWS_ACCESS_KEY_ID', '')
+        secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY', '')
+        token = os.environ.get('AWS_SESSION_TOKEN')
+        service = 'dynamodb'
+        target = 'DynamoDB_20120810.' + operation
+    
+        body = json.dumps(request).encode('utf-8')
+        parsed = urlparse(endpoint)
+        host = parsed.netloc
+        method = 'POST'
+        canonical_uri = '/'
+        content_type = 'application/x-amz-json-1.0'
+    
+        now = datetime.datetime.now(datetime.timezone.utc)
+        amzdate = now.strftime('%Y%m%dT%H%M%SZ')
+        datestamp = now.strftime('%Y%m%d')
+    
+        payload_hash = hashlib.sha256(body).hexdigest()
+        canonical_headers = (
+            'content-type:%s\nhost:%s\nx-amz-date:%s\nx-amz-target:%s\n'
+            % (content_type, host, amzdate, target))
+        signed_headers = 'content-type;host;x-amz-date;x-amz-target'
+        canonical_request = '\n'.join([
+            method, canonical_uri, '', canonical_headers, signed_headers,
+            payload_hash])
+    
+        algorithm = 'AWS4-HMAC-SHA256'
+        credential_scope = '%s/%s/%s/aws4_request' % (datestamp, region, 
+service)
+        string_to_sign = '\n'.join([
+            algorithm, amzdate, credential_scope,
+            hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()])
+    
+        k_date = _sign(('AWS4' + secret_key).encode('utf-8'), datestamp)
+        k_region = _sign(k_date, region)
+        k_service = _sign(k_region, service)
+        k_signing = _sign(k_service, 'aws4_request')
+        signature = hmac.new(k_signing, string_to_sign.encode('utf-8'),
+                             hashlib.sha256).hexdigest()
+    
+        authorization = (
+            '%s Credential=%s/%s, SignedHeaders=%s, Signature=%s'
+            % (algorithm, access_key, credential_scope, signed_headers, 
+signature))
+    
+        headers = {
+            'Content-Type': content_type,
+            'X-Amz-Date': amzdate,
+            'X-Amz-Target': target,
+            'Authorization': authorization,
+        }
+        if token:
+            headers['X-Amz-Security-Token'] = token
+    
+        req = urllib.request.Request(endpoint, data=body, headers=headers,
+                                     method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            code, message = _parse_error(raw)
+            raise ServiceError(code, message, operation)
+        except urllib.error.URLError as e:
+            raise ServiceError('EndpointConnectionError', str(e.reason), 
+operation)
+    
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return {}
+    
+    
+    def _parse_error(raw):
+        code = 'UnknownError'
+        message = ''
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return code, raw.decode('utf-8', 'replace') if raw else ''
+        typ = data.get('__type') or data.get('code') or ''
+        if typ:
+            code = typ.split('#')[-1]
+        message = (data.get('message') or data.get('Message')
+                   or data.get('MESSAGE') or '')
+        return code, message
+    
+    
+    # 
+---------------------------------------------------------------------------
+    # Main
+    # 
+---------------------------------------------------------------------------
+    def run(argv):
+        if len(argv) < 1 or argv[0] != 'dynamodb':
+            raise UsageError("usage: aws dynamodb <command> ...")
+        if len(argv) < 2:
+            raise UsageError("usage: aws dynamodb <command> ...")
+        command = argv[1]
+        if command not in COMMANDS:
+            raise UsageError("Unknown command: %s" % command)
+    
+        op, request = parse_args(command, argv[2:])
+        response = call(op, request)
+        sys.stdout.write(json.dumps(response))
+        sys.stdout.write('\n')
+        return EXIT_OK
+    
+    
+    def main():
+        try:
+            sys.exit(run(sys.argv[1:]))
+        except UsageError as e:
+            sys.stderr.write(str(e) + '\n')
+            sys.exit(EXIT_USAGE)
+        except ServiceError as e:
+            sys.stderr.write(
+                'An error occurred (%s) when calling the %s operation: %s\n'
+                % (e.code, e.operation, e.message))
+            sys.exit(EXIT_SERVICE)
+        except BrokenPipeError:
+            sys.exit(EXIT_GENERAL)
+        except Exception as e:  # noqa: BLE001 - never leak a traceback
+            sys.stderr.write('Error: %s\n' % e)
+            sys.exit(EXIT_GENERAL)
+    
+    
+    if __name__ == '__main__':
+        main()
+    
+
+  kind: "FileEditorAction"
+
+Tokens: ↑ input 95.52K • cache hit 59.85% • ↓ output 26.05K • $ 0.9196
+
+Observation ────────────────────────────────────────────────────────────────────
+
+Tool: file_editor
+Result:
+[File /workspace/submission/aws edited with 1 changes.]
+[begin of edit 1 / 1]
+(content before edit)
+-1|
+(content after edit)
++1|#!/usr/bin/env python3
++2|"""Minimal `aws dynamodb` CLI implemented with the Python standard library.
++3|
++4|Dispatches on the dynamodb subcommand, translates CLI flags into DynamoDB
++5|JSON (1.0) API requests, signs them with AWS SigV4, and talks to the
++6|endpoint configured in the environment.
++7|"""
++8|
++9|import sys
++10|import os
++11|import json
++12|import hashlib
++13|import hmac
++14|import datetime
++15|import urllib.request
++16|import urllib.error
++17|from urllib.parse import urlparse
++18|
++19|
++20|# 
+---------------------------------------------------------------------------
++21|# Error types + exit codes
++22|# 
+---------------------------------------------------------------------------
++23|EXIT_OK = 0
++24|EXIT_USAGE = 252        # parameter / usage error
++25|EXIT_SERVICE = 254      # service-modeled error
++26|EXIT_GENERAL = 255      # other/general error
++27|
++28|
++29|class UsageError(Exception):
++30|    """Client-side parameter/usage error -> exit 252."""
++31|
++32|
++33|class ServiceError(Exception):
++34|    def __init__(self, code, message, operation):
++35|        self.code = code
++36|        self.message = message
++37|        self.operation = operation
++38|        super().__init__(message)
++39|
++40|
++41|# 
+---------------------------------------------------------------------------
++42|# Flag definitions.  flag -> (RequestParamName, kind)
++43|# 
+---------------------------------------------------------------------------
++44|DEF = {
++45|    '--table-name': ('TableName', 'str'),
++46|    '--attribute-definitions': ('AttributeDefinitions', 'structlist'),
++47|    '--key-schema': ('KeySchema', 'structlist'),
++48|    '--billing-mode': ('BillingMode', 'str'),
++49|    '--provisioned-throughput': ('ProvisionedThroughput', 'throughput'),
++50|    '--on-demand-throughput': ('OnDemandThroughput', 'struct'),
++51|    '--warm-throughput': ('WarmThroughput', 'struct'),
++52|    '--sse-specification': ('SSESpecification', 'struct'),
++53|    '--stream-specification': ('StreamSpecification', 'struct'),
++54|    '--table-class': ('TableClass', 'str'),
++55|    '--deletion-protection-enabled': ('DeletionProtectionEnabled', 'bool'),
++56|    '--global-secondary-indexes': ('GlobalSecondaryIndexes', 'jsonval'),
++57|    '--local-secondary-indexes': ('LocalSecondaryIndexes', 'jsonval'),
++58|    '--resource-policy': ('ResourcePolicy', 'str'),
++59|    '--tags': ('Tags', 'structlist'),
++60|    '--global-table-settings-replication-mode':
++61|        ('GlobalTableSettingsReplicationMode', 'str'),
++62|    '--global-table-source-arn': ('GlobalTableSourceArn', 'str'),
++63|
++64|    '--key': ('Key', 'jsonval'),
++65|    '--item': ('Item', 'jsonval'),
++66|    '--condition-expression': ('ConditionExpression', 'str'),
++67|    '--conditional-operator': ('ConditionalOperator', 'str'),
++68|    '--expected': ('Expected', 'jsonval'),
++69|    '--expression-attribute-names': ('ExpressionAttributeNames', 'namemap'),
++70|    '--expression-attribute-values': ('ExpressionAttributeValues', 
+'jsonval'),
++71|    '--return-consumed-capacity': ('ReturnConsumedCapacity', 'str'),
++72|    '--return-item-collection-metrics': ('ReturnItemCollectionMetrics', 
+'str'),
++73|    '--return-values': ('ReturnValues', 'str'),
++74|    '--return-values-on-condition-check-failure':
++75|        ('ReturnValuesOnConditionCheckFailure', 'str'),
++76|
++77|    '--attributes-to-get': ('AttributesToGet', 'liststr'),
++78|    '--consistent-read': ('ConsistentRead', 'bool'),
++79|    '--projection-expression': ('ProjectionExpression', 'str'),
++80|
++81|    '--update-expression': ('UpdateExpression', 'str'),
++82|    '--attribute-updates': ('AttributeUpdates', 'jsonval'),
++83|
++84|    '--limit': ('Limit', 'int'),
++85|    '--exclusive-start-table-name': ('ExclusiveStartTableName', 'str'),
++86|
++87|    '--exclusive-start-key': ('ExclusiveStartKey', 'jsonval'),
++88|    '--filter-expression': ('FilterExpression', 'str'),
++89|    '--index-name': ('IndexName', 'str'),
++90|    '--key-condition-expression': ('KeyConditionExpression', 'str'),
++91|    '--key-conditions': ('KeyConditions', 'jsonval'),
++92|    '--query-filter': ('QueryFilter', 'jsonval'),
++93|    '--scan-index-forward': ('ScanIndexForward', 'bool'),
++94|    '--select': ('Select', 'str'),
++95|}
++96|
++97|# command -> (Operation, [documented flags], [required flags])
++98|COMMANDS = {
++99|    'create-table': ('CreateTable', [
++100|        '--attribute-definitions', '--billing-mode',
++101|        '--deletion-protection-enabled', '--global-secondary-indexes',
++102|        '--global-table-settings-replication-mode', 
+'--global-table-source-arn',
++103|        '--key-schema', '--local-secondary-indexes', 
+'--on-demand-throughput',
++104|        '--provisioned-throughput', '--resource-policy', 
+'--sse-specification',
++105|        '--stream-specification', '--table-class', '--table-name', 
+'--tags',
++106|        '--warm-throughput'], ['--table-name']),
++107|    'delete-item': ('DeleteItem', [
++108|        '--condition-expression', '--conditional-operator', '--expected',
++109|        '--expression-attribute-names', '--expression-attribute-values',
++110|        '--key', '--return-consumed-capacity',
++111|        '--return-item-collection-metrics', '--return-values',
++112|        '--return-values-on-condition-check-failure', '--table-name'],
++113|        ['--table-name', '--key']),
++114|    'delete-table': ('DeleteTable', ['--table-name'], ['--table-name']),
++115|    'get-item': ('GetItem', [
++116|        '--attributes-to-get', '--consistent-read',
++117|        '--expression-attribute-names', '--key', '--projection-expression',
++118|        '--return-consumed-capacity', '--table-name'],
++119|        ['--table-name', '--key']),
++120|    'list-tables': ('ListTables',
++121|                    ['--exclusive-start-table-name', '--limit'], []),
++122|    'put-item': ('PutItem', [
++123|        '--condition-expression', '--conditional-operator', '--expected',
++124|        '--expression-attribute-names', '--expression-attribute-values',
++125|        '--item', '--return-consumed-capacity',
++126|        '--return-item-collection-metrics', '--return-values',
++127|        '--return-values-on-condition-check-failure', '--table-name'],
++128|        ['--table-name', '--item']),
++129|    'query': ('Query', [
++130|        '--attributes-to-get', '--conditional-operator', 
+'--consistent-read',
++131|        '--exclusive-start-key', '--expression-attribute-names',
++132|        '--expression-attribute-values', '--filter-expression', 
+'--index-name',
++133|        '--key-condition-expression', '--key-conditions', '--limit',
++134|        '--projection-expression', '--query-filter', 
+'--return-consumed-capacity',
++135|        '--scan-index-forward', '--select', '--table-name'], 
+['--table-name']),
++136|    'update-item': ('UpdateItem', [
++137|        '--attribute-updates', '--condition-expression', 
+'--conditional-operator',
++138|        '--expected', '--expression-attribute-names',
++139|        '--expression-attribute-values', '--key', 
+'--return-consumed-capacity',
++140|        '--return-item-collection-metrics', '--return-values',
++141|        '--return-values-on-condition-check-failure', '--table-name',
++142|        '--update-expression'], ['--table-name', '--key']),
++143|}
++144|
++145|BOOL_FLAGS = {'--consistent-read', '--scan-index-forward',
++146|              '--deletion-protection-enabled'}
++147|
++148|
++149|# 
+---------------------------------------------------------------------------
++150|# Value parsing helpers
++151|# 
+---------------------------------------------------------------------------
++152|def parse_json(text):
++153|    try:
++154|        return json.loads(text)
++155|    except (ValueError, TypeError):
++156|        raise UsageError("Parameter validation failed: invalid JSON value")
++157|
++158|
++159|def parse_one_struct(text):
++160|    text = text.strip()
++161|    if text.startswith('{') or text.startswith('['):
++162|        return parse_json(text)
++163|    out = {}
++164|    for part in text.split(','):
++165|        if '=' not in part:
++166|            raise UsageError("Parameter validation failed: invalid 
+shorthand")
++167|        k, v = part.split('=', 1)
++168|        out[k.strip()] = v.strip()
++169|    return out
++170|
++171|
++172|def parse_struct_list(tokens):
++173|    if len(tokens) == 1:
++174|        t = tokens[0].strip()
++175|        if t.startswith('[') or t.startswith('{'):
++176|            val = parse_json(t)
++177|            return val if isinstance(val, list) else [val]
++178|    return [parse_one_struct(t) for t in tokens]
++179|
++180|
++181|def parse_name_map(text):
++182|    text = text.strip()
++183|    if text.startswith('{'):
++184|        return parse_json(text)
++185|    out = {}
++186|    for part in text.split(','):
++187|        if '=' not in part:
++188|            raise UsageError("Parameter validation failed: invalid 
+shorthand")
++189|        k, v = part.split('=', 1)
++190|        out[k.strip()] = v.strip()
++191|    return out
++192|
++193|
++194|def coerce_numeric(d, keys):
++195|    for k in keys:
++196|        if k in d and isinstance(d[k], str):
++197|            try:
++198|                d[k] = int(d[k])
++199|            except ValueError:
++200|                try:
++201|                    d[k] = float(d[k])
++202|                except ValueError:
++203|                    pass
++204|    return d
++205|
++206|
++207|def build_value(kind, tokens):
++208|    if kind == 'str':
++209|        return tokens[0]
++210|    if kind == 'int':
++211|        try:
++212|            return int(tokens[0])
++213|        except ValueError:
++214|            raise UsageError("Parameter validation failed: invalid 
+integer")
++215|    if kind == 'jsonval':
++216|        return parse_json(tokens[0])
++217|    if kind == 'namemap':
++218|        return parse_name_map(tokens[0])
++219|    if kind == 'liststr':
++220|        return list(tokens)
++221|    if kind == 'structlist':
++222|        return parse_struct_list(tokens)
++223|    if kind == 'throughput':
++224|        d = parse_one_struct(tokens[0])
++225|        return coerce_numeric(d, ('ReadCapacityUnits', 
+'WriteCapacityUnits'))
++226|    if kind == 'struct':
++227|        return parse_one_struct(tokens[0])
++228|    raise UsageError("internal: unknown kind")
++229|
++230|
++231|# 
+---------------------------------------------------------------------------
++232|# Argv parsing
++233|# 
+---------------------------------------------------------------------------
++234|LIST_KINDS = {'liststr', 'structlist'}
++235|
++236|
++237|def parse_args(command, tokens):
++238|    op, allowed, required = COMMANDS[command]
++239|    allowed_set = set(allowed)
++240|
++241|    request = {}
++242|    seen = set()
++243|    i = 0
++244|    n = len(tokens)
++245|    while i < n:
++246|        tok = tokens[i]
++247|        if not tok.startswith('--'):
++248|            raise UsageError("usage: unexpected argument: %s" % tok)
++249|        if tok not in DEF or tok not in allowed_set:
++250|            raise UsageError("Unknown options: %s" % tok)
++251|        param, kind = DEF[tok]
++252|        if param in seen:
++253|            raise UsageError("usage: duplicate option: %s" % tok)
++254|        seen.add(param)
++255|
++256|        if tok in BOOL_FLAGS:
++257|            request[param] = True
++258|            i += 1
++259|            continue
++260|
++261|        is_list = kind in LIST_KINDS
++262|        if is_list:
++263|            vals = []
++264|            j = i + 1
++265|            while j < n and not tokens[j].startswith('--'):
++266|                vals.append(tokens[j])
++267|                j += 1
++268|            if not vals:
++269|                raise UsageError("usage: option %s requires a value" % tok)
++270|            request[param] = build_value(kind, vals)
++271|            i = j
++272|        else:
++273|            if i + 1 >= n or tokens[i + 1].startswith('--'):
++274|                raise UsageError("usage: option %s requires a value" % tok)
++275|            request[param] = build_value(kind, [tokens[i + 1]])
++276|            i += 2
++277|
++278|    for req in required:
++279|        rparam = DEF[req][0]
++280|        if rparam not in request:
++281|            raise UsageError("usage: missing required option: %s" % req)
++282|
++283|    return op, request
++284|
++285|
++286|# 
+---------------------------------------------------------------------------
++287|# SigV4 signing + HTTP
++288|# 
+---------------------------------------------------------------------------
++289|def _sign(key, msg):
++290|    return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).digest()
++291|
++292|
++293|def call(operation, request):
++294|    endpoint = (os.environ.get('AWS_ENDPOINT_URL_DYNAMODB')
++295|                or os.environ.get('AWS_ENDPOINT_URL')
++296|                or 'http://localhost:8000')
++297|    region = (os.environ.get('AWS_REGION')
++298|              or os.environ.get('AWS_DEFAULT_REGION') or 'us-east-1')
++299|    access_key = os.environ.get('AWS_ACCESS_KEY_ID', '')
++300|    secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY', '')
++301|    token = os.environ.get('AWS_SESSION_TOKEN')
++302|    service = 'dynamodb'
++303|    target = 'DynamoDB_20120810.' + operation
++304|
++305|    body = json.dumps(request).encode('utf-8')
++306|    parsed = urlparse(endpoint)
++307|    host = parsed.netloc
++308|    method = 'POST'
++309|    canonical_uri = '/'
++310|    content_type = 'application/x-amz-json-1.0'
++311|
++312|    now = datetime.datetime.now(datetime.timezone.utc)
++313|    amzdate = now.strftime('%Y%m%dT%H%M%SZ')
++314|    datestamp = now.strftime('%Y%m%d')
++315|
++316|    payload_hash = hashlib.sha256(body).hexdigest()
++317|    canonical_headers = (
++318|        'content-type:%s\nhost:%s\nx-amz-date:%s\nx-amz-target:%s\n'
++319|        % (content_type, host, amzdate, target))
++320|    signed_headers = 'content-type;host;x-amz-date;x-amz-target'
++321|    canonical_request = '\n'.join([
++322|        method, canonical_uri, '', canonical_headers, signed_headers,
++323|        payload_hash])
++324|
++325|    algorithm = 'AWS4-HMAC-SHA256'
++326|    credential_scope = '%s/%s/%s/aws4_request' % (datestamp, region, 
+service)
++327|    string_to_sign = '\n'.join([
++328|        algorithm, amzdate, credential_scope,
++329|        hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()])
++330|
++331|    k_date = _sign(('AWS4' + secret_key).encode('utf-8'), datestamp)
++332|    k_region = _sign(k_date, region)
++333|    k_service = _sign(k_region, service)
++334|    k_signing = _sign(k_service, 'aws4_request')
++335|    signature = hmac.new(k_signing, string_to_sign.encode('utf-8'),
++336|                         hashlib.sha256).hexdigest()
++337|
++338|    authorization = (
++339|        '%s Credential=%s/%s, SignedHeaders=%s, Signature=%s'
++340|        % (algorithm, access_key, credential_scope, signed_headers, 
+signature))
++341|
++342|    headers = {
++343|        'Content-Type': content_type,
++344|        'X-Amz-Date': amzdate,
++345|        'X-Amz-Target': target,
++346|        'Authorization': authorization,
++347|    }
++348|    if token:
++349|        headers['X-Amz-Security-Token'] = token
++350|
++351|    req = urllib.request.Request(endpoint, data=body, headers=headers,
++352|                                 method=method)
++353|    try:
++354|        with urllib.request.urlopen(req, timeout=30) as resp:
++355|            raw = resp.read()
++356|    except urllib.error.HTTPError as e:
++357|        raw = e.read()
++358|        code, message = _parse_error(raw)
++359|        raise ServiceError(code, message, operation)
++360|    except urllib.error.URLError as e:
++361|        raise ServiceError('EndpointConnectionError', str(e.reason), 
+operation)
++362|
++363|    if not raw:
++364|        return {}
++365|    try:
++366|        return json.loads(raw)
++367|    except ValueError:
++368|        return {}
++369|
++370|
++371|def _parse_error(raw):
++372|    code = 'UnknownError'
++373|    message = ''
++374|    try:
++375|        data = json.loads(raw)
++376|    except ValueError:
++377|        return code, raw.decode('utf-8', 'replace') if raw else ''
++378|    typ = data.get('__type') or data.get('code') or ''
++379|    if typ:
++380|        code = typ.split('#')[-1]
++381|    message = (data.get('message') or data.get('Message')
++382|               or data.get('MESSAGE') or '')
++383|    return code, message
++384|
++385|
++386|# 
+---------------------------------------------------------------------------
++387|# Main
++388|# 
+---------------------------------------------------------------------------
++389|def run(argv):
++390|    if len(argv) < 1 or argv[0] != 'dynamodb':
++391|        raise UsageError("usage: aws dynamodb <command> ...")
++392|    if len(argv) < 2:
++393|        raise UsageError("usage: aws dynamodb <command> ...")
++394|    command = argv[1]
++395|    if command not in COMMANDS:
++396|        raise UsageError("Unknown command: %s" % command)
++397|
++398|    op, request = parse_args(command, argv[2:])
++399|    response = call(op, request)
++400|    sys.stdout.write(json.dumps(response))
++401|    sys.stdout.write('\n')
++402|    return EXIT_OK
++403|
++404|
++405|def main():
++406|    try:
++407|        sys.exit(run(sys.argv[1:]))
++408|    except UsageError as e:
++409|        sys.stderr.write(str(e) + '\n')
++410|        sys.exit(EXIT_USAGE)
++411|    except ServiceError as e:
++412|        sys.stderr.write(
++413|            'An error occurred (%s) when calling the %s operation: %s\n'
++414|            % (e.code, e.operation, e.message))
++415|        sys.exit(EXIT_SERVICE)
++416|    except BrokenPipeError:
++417|        sys.exit(EXIT_GENERAL)
++418|    except Exception as e:  # noqa: BLE001 - never leak a traceback
++419|        sys.stderr.write('Error: %s\n' % e)
++420|        sys.exit(EXIT_GENERAL)
++421|
++422|
++423|if __name__ == '__main__':
++424|    main()
++425|
+[end of edit 1 / 1]
+
+Agent Action ───────────────────────────────────────────────────────────────────
+
+Summary: Make executable and test list-tables
+
+$ chmod +x /workspace/submission/aws && cd /tmp && hash -r && which aws && aws 
+dynamodb list-tables; echo "exit=$?"
+
+Tokens: ↑ input 140.31K • cache hit 68.08% • ↓ output 26.21K • $ 0.9829
+
+Observation ────────────────────────────────────────────────────────────────────
+
+Tool: terminal
+Result:
+[?2004l/workspace/submission/aws
+{"TableNames": []}
+exit=0
+[?2004h
+
+📁 Working directory: /tmp
+🐍 Python interpreter: /usr/local/bin/python
+✅ Exit code: 0
+
+Agent Action ───────────────────────────────────────────────────────────────────
+
+Summary: End-to-end test of create/write/read/query
+
+Thought:
+Working. Now let me run a comprehensive end-to-end test covering the full 
+workflow and error cases.
+
+$ cd /tmp
+set +e
+echo "=== create-table (full) ==="
+aws dynamodb create-table --table-name T1 --attribute-definitions 
+AttributeName=id,AttributeType=S --key-schema AttributeName=id,KeyType=HASH 
+--billing-mode PAY_PER_REQUEST; echo "exit=$?"
+echo "=== recreate (ResourceInUse) ==="
+aws dynamodb create-table --table-name T1 --attribute-definitions 
+AttributeName=id,AttributeType=S --key-schema AttributeName=id,KeyType=HASH 
+--billing-mode PAY_PER_REQUEST; echo "exit=$?"
+echo "=== list-tables ==="
+aws dynamodb list-tables; echo "exit=$?"
+echo "=== put-item (write via update-item SET) ==="
+aws dynamodb update-item --table-name T1 --key '{"id":{"S":"k1"}}' 
+--update-expression 'SET v = :v' --expression-attribute-values 
+'{":v":{"S":"hello"}}'; echo "exit=$?"
+echo "=== get-item ==="
+aws dynamodb get-item --table-name T1 --key '{"id":{"S":"k1"}}' 
+--consistent-read; echo "exit=$?"
+echo "=== ADD numeric ==="
+aws dynamodb update-item --table-name T1 --key '{"id":{"S":"k1"}}' 
+--update-expression 'ADD c :inc' --expression-attribute-values 
+'{":inc":{"N":"1"}}'; echo "exit=$?"
+aws dynamodb get-item --table-name T1 --key '{"id":{"S":"k1"}}'; echo "exit=$?"
+echo "=== query ==="
+aws dynamodb query --table-name T1 --key-condition-expression 'id = :pk' 
+--expression-attribute-values '{":pk":{"S":"k1"}}'; echo "exit=$?"
+
+Tokens: ↑ input 185.35K • cache hit 75.69% • ↓ output 27.01K • $ 1.0269
+
+Observation ────────────────────────────────────────────────────────────────────
+
+Tool: terminal
+Result:
+❌ [An error occurred during execution.]
+Cannot execute multiple commands at once.
+Please run each command separately OR chain them into a single command via && or
+;
+Provided commands:
+(1) cd /tmp
+(2) set +e
+(3) echo "=== create-table (full) ==="
+(4) aws dynamodb create-table --table-name T1 --attribute-definitions 
+AttributeName=id,AttributeType=S --key-schema AttributeName=id,KeyType=HASH 
+--billing-mode PAY_PER_REQUEST; echo "exit=$?"
+(5) echo "=== recreate (ResourceInUse) ==="
+(6) aws dynamodb create-table --table-name T1 --attribute-definitions 
+AttributeName=id,AttributeType=S --key-schema AttributeName=id,KeyType=HASH 
+--billing-mode PAY_PER_REQUEST; echo "exit=$?"
+(7) echo "=== list-tables ==="
+(8) aws dynamodb list-tables; echo "exit=$?"
+(9) echo "=== put-item (write via update-item SET) ==="
+(10) aws dynamodb update-item --table-name T1 --key '{"id":{"S":"k1"}}' 
+--update-expression 'SET v = :v' --expression-attribute-values 
+'{":v":{"S":"hello"}}'; echo "exit=$?"
+(11) echo "=== get-item ==="
+(12) aws dynamodb get-item --table-name T1 --key '{"id":{"S":"k1"}}' 
+--consistent-read; echo "exit=$?"
+(13) echo "=== ADD numeric ==="
+(14) aws dynamodb update-item --table-name T1 --key '{"id":{"S":"k1"}}' 
+--update-expression 'ADD c :inc' --expression-attribute-values 
+'{":inc":{"N":"1"}}'; echo "exit=$?"
+(15) aws dynamodb get-item --table-name T1 --key '{"id":{"S":"k1"}}'; echo 
+"exit=$?"
+(16) echo "=== query ==="
+(17) aws dynamodb query --table-name T1 --key-condition-expression 'id = :pk' 
+--expression-attribute-values '{":pk":{"S":"k1"}}'; echo "exit=$?"
+
+⏳ Process still running (soft timeout)
+
+Agent Action ───────────────────────────────────────────────────────────────────
+
+Summary: Create test script
+
+Thought:
+I'll put the test in a script file instead.
+
+Action: FileEditorAction
+
+Arguments:
+  command: "create"
+  path: "/tmp/t.sh"
+  file_text: 
+    #!/bin/bash
+    cd /tmp
+    echo "=== create-table (full) ==="
+    aws dynamodb create-table --table-name T1 --attribute-definitions 
+AttributeName=id,AttributeType=S --key-schema AttributeName=id,KeyType=HASH 
+--billing-mode PAY_PER_REQUEST; echo "exit=$?"
+    echo "=== recreate (ResourceInUse) ==="
+    aws dynamodb create-table --table-name T1 --attribute-definitions 
+AttributeName=id,AttributeType=S --key-schema AttributeName=id,KeyType=HASH 
+--billing-mode PAY_PER_REQUEST; echo "exit=$?"
+    echo "=== list-tables ==="
+    aws dynamodb list-tables; echo "exit=$?"
+    echo "=== update-item SET (write) ==="
+    aws dynamodb update-item --table-name T1 --key '{"id":{"S":"k1"}}' 
+--update-expression 'SET v = :v' --expression-attribute-values 
+'{":v":{"S":"hello"}}'; echo "exit=$?"
+    echo "=== get-item consistent ==="
+    aws dynamodb get-item --table-name T1 --key '{"id":{"S":"k1"}}' 
+--consistent-read; echo "exit=$?"
+    echo "=== ADD numeric ==="
+    aws dynamodb update-item --table-name T1 --key '{"id":{"S":"k1"}}' 
+--update-expression 'ADD c :inc' --expression-attribute-values 
+'{":inc":{"N":"1"}}'; echo "exit=$?"
+    aws dynamodb get-item --table-name T1 --key '{"id":{"S":"k1"}}'; echo 
+"exit=$?"
+    echo "=== query ==="
+    aws dynamodb query --table-name T1 --key-condition-expression 'id = :pk' 
+--expression-attribute-values '{":pk":{"S":"k1"}}'; echo "exit=$?"
+    echo "=== get-item missing key (no Item) ==="
+    aws dynamodb get-item --table-name T1 --key '{"id":{"S":"nope"}}'; echo 
+"exit=$?"
+    echo "=== delete-item ==="
+    aws dynamodb delete-item --table-name T1 --key '{"id":{"S":"k1"}}'; echo 
+"exit=$?"
+    aws dynamodb get-item --table-name T1 --key '{"id":{"S":"k1"}}'; echo 
+"exit=$?"
+    echo "=== delete-item nonexistent (idempotent) ==="
+    aws dynamodb delete-item --table-name T1 --key '{"id":{"S":"gone"}}'; echo 
+"exit=$?"
+    echo "=== reserved word validation (Status unescaped) ==="
+    aws dynamodb update-item --table-name T1 --key '{"id":{"S":"k2"}}' 
+--update-expression 'SET Status = :s' --expression-attribute-values 
+'{":s":{"S":"x"}}'; echo "exit=$?"
+    echo "=== reserved word aliased ==="
+    aws dynamodb update-item --table-name T1 --key '{"id":{"S":"k2"}}' 
+--update-expression 'SET #s = :s' --expression-attribute-names '{"#s":"Status"}'
+--expression-attribute-values '{":s":{"S":"x"}}'; echo "exit=$?"
+    echo "=== condition fail ==="
+    aws dynamodb delete-item --table-name T1 --key '{"id":{"S":"never"}}' 
+--condition-expression 'attribute_exists(id)'; echo "exit=$?"
+    
+
+  kind: "FileEditorAction"
+
+Tokens: ↑ input 231.95K • cache hit 79.90% • ↓ output 28.38K • $ 1.0936
+
+Observation ────────────────────────────────────────────────────────────────────
+
+Tool: file_editor
+Result:
+[File /tmp/t.sh edited with 1 changes.]
+[begin of edit 1 / 1]
+(content before edit)
+  1|
+(content after edit)
++ 1|#!/bin/bash
++ 2|cd /tmp
++ 3|echo "=== create-table (full) ==="
++ 4|aws dynamodb create-table --table-name T1 --attribute-definitions 
+AttributeName=id,AttributeType=S --key-schema AttributeName=id,KeyType=HASH 
+--billing-mode PAY_PER_REQUEST; echo "exit=$?"
++ 5|echo "=== recreate (ResourceInUse) ==="
++ 6|aws dynamodb create-table --table-name T1 --attribute-definitions 
+AttributeName=id,AttributeType=S --key-schema AttributeName=id,KeyType=HASH 
+--billing-mode PAY_PER_REQUEST; echo "exit=$?"
++ 7|echo "=== list-tables ==="
++ 8|aws dynamodb list-tables; echo "exit=$?"
++ 9|echo "=== update-item SET (write) ==="
++10|aws dynamodb update-item --table-name T1 --key '{"id":{"S":"k1"}}' 
+--update-expression 'SET v = :v' --expression-attribute-values 
+'{":v":{"S":"hello"}}'; echo "exit=$?"
++11|echo "=== get-item consistent ==="
++12|aws dynamodb get-item --table-name T1 --key '{"id":{"S":"k1"}}' 
+--consistent-read; echo "exit=$?"
++13|echo "=== ADD numeric ==="
++14|aws dynamodb update-item --table-name T1 --key '{"id":{"S":"k1"}}' 
+--update-expression 'ADD c :inc' --expression-attribute-values 
+'{":inc":{"N":"1"}}'; echo "exit=$?"
++15|aws dynamodb get-item --table-name T1 --key '{"id":{"S":"k1"}}'; echo 
+"exit=$?"
++16|echo "=== query ==="
++17|aws dynamodb query --table-name T1 --key-condition-expression 'id = :pk' 
+--expression-attribute-values '{":pk":{"S":"k1"}}'; echo "exit=$?"
++18|echo "=== get-item missing key (no Item) ==="
++19|aws dynamodb get-item --table-name T1 --key '{"id":{"S":"nope"}}'; echo 
+"exit=$?"
++20|echo "=== delete-item ==="
++21|aws dynamodb delete-item --table-name T1 --key '{"id":{"S":"k1"}}'; echo 
+"exit=$?"
++22|aws dynamodb get-item --table-name T1 --key '{"id":{"S":"k1"}}'; echo 
+"exit=$?"
++23|echo "=== delete-item nonexistent (idempotent) ==="
++24|aws dynamodb delete-item --table-name T1 --key '{"id":{"S":"gone"}}'; echo 
+"exit=$?"
++25|echo "=== reserved word validation (Status unescaped) ==="
++26|aws dynamodb update-item --table-name T1 --key '{"id":{"S":"k2"}}' 
+--update-expression 'SET Status = :s' --expression-attribute-values 
+'{":s":{"S":"x"}}'; echo "exit=$?"
++27|echo "=== reserved word aliased ==="
++28|aws dynamodb update-item --table-name T1 --key '{"id":{"S":"k2"}}' 
+--update-expression 'SET #s = :s' --expression-attribute-names '{"#s":"Status"}'
+--expression-attribute-values '{":s":{"S":"x"}}'; echo "exit=$?"
++29|echo "=== condition fail ==="
++30|aws dynamodb delete-item --table-name T1 --key '{"id":{"S":"never"}}' 
+--condition-expression 'attribute_exists(id)'; echo "exit=$?"
+ 31|
+[end of edit 1 / 1]
+
+Agent Action ───────────────────────────────────────────────────────────────────
+
+Summary: Run end-to-end test script
+
+$ bash /tmp/t.sh 2>&1
+
+Tokens: ↑ input 279.96K • cache hit 82.85% • ↓ output 28.5K • $ 1.1287
+
+Observation ────────────────────────────────────────────────────────────────────
+
+Tool: terminal
+Result:
+[?2004l=== create-table (full) ===
+An error occurred (ValidationException) when calling the CreateTable operation: 
+Invalid table/index name.  Table/index names must be between 3 and 255 
+characters long, and may contain only the characters a-z, A-Z, 0-9, '_', '-', 
+and '.'
+exit=254
+=== recreate (ResourceInUse) ===
+An error occurred (ValidationException) when calling the CreateTable operation: 
+Invalid table/index name.  Table/index names must be between 3 and 255 
+characters long, and may contain only the characters a-z, A-Z, 0-9, '_', '-', 
+and '.'
+exit=254
+=== list-tables ===
+{"TableNames": []}
+exit=0
+=== update-item SET (write) ===
+An error occurred (ValidationException) when calling the UpdateItem operation: 
+Invalid table/index name.  Table/index names must be between 3 and 255 
+characters long, and may contain only the characters a-z, A-Z, 0-9, '_', '-', 
+and '.'
+exit=254
+=== get-item consistent ===
+An error occurred (ValidationException) when calling the GetItem operation: 
+Invalid table/index name.  Table/index names must be between 3 and 255 
+characters long, and may contain only the characters a-z, A-Z, 0-9, '_', '-', 
+and '.'
+exit=254
+=== ADD numeric ===
+An error occurred (ValidationException) when calling the UpdateItem operation: 
+Invalid table/index name.  Table/index names must be between 3 and 255 
+characters long, and may contain only the characters a-z, A-Z, 0-9, '_', '-', 
+and '.'
+exit=254
+An error occurred (ValidationException) when calling the GetItem operation: 
+Invalid table/index name.  Table/index names must be between 3 and 255 
+characters long, and may contain only the characters a-z, A-Z, 0-9, '_', '-', 
+and '.'
+exit=254
+=== query ===
+An error occurred (ValidationException) when calling the Query operation: 
+Invalid table/index name.  Table/index names must be between 3 and 255 
+characters long, and may contain only the characters a-z, A-Z, 0-9, '_', '-', 
+and '.'
+exit=254
+=== get-item missing key (no Item) ===
+An error occurred (ValidationException) when calling the GetItem operation: 
+Invalid table/index name.  Table/index names must be between 3 and 255 
+characters long, and may contain only the characters a-z, A-Z, 0-9, '_', '-', 
+and '.'
+exit=254
+=== delete-item ===
+An error occurred (ValidationException) when calling the DeleteItem operation: 
+Invalid table/index name.  Table/index names must be between 3 and 255 
+characters long, and may contain only the characters a-z, A-Z, 0-9, '_', '-', 
+and '.'
+exit=254
+An error occurred (ValidationException) when calling the GetItem operation: 
+Invalid table/index name.  Table/index names must be between 3 and 255 
+characters long, and may contain only the characters a-z, A-Z, 0-9, '_', '-', 
+and '.'
+exit=254
+=== delete-item nonexistent (idempotent) ===
+An error occurred (ValidationException) when calling the DeleteItem operation: 
+Invalid table/index name.  Table/index names must be between 3 and 255 
+characters long, and may contain only the characters a-z, A-Z, 0-9, '_', '-', 
+and '.'
+exit=254
+=== reserved word validation (Status unescaped) ===
+An error occurred (ValidationException) when calling the UpdateItem operation: 
+Invalid table/index name.  Table/index names must be between 3 and 255 
+characters long, and may contain only the characters a-z, A-Z, 0-9, '_', '-', 
+and '.'
+exit=254
+=== reserved word aliased ===
+An error occurred (ValidationException) when calling the UpdateItem operation: 
+Invalid table/index name.  Table/index names must be between 3 and 255 
+characters long, and may contain only the characters a-z, A-Z, 0-9, '_', '-', 
+and '.'
+exit=254
+=== condition fail ===
+An error occurred (ValidationException) when calling the DeleteItem operation: 
+Invalid table/index name.  Table/index names must be between 3 and 255 
+characters long, and may contain only the characters a-z, A-Z, 0-9, '_', '-', 
+and '.'
+exit=254
+[?2004h
+
+📁 Working directory: /tmp
+🐍 Python interpreter: /usr/local/bin/python
+✅ Exit code: 0
+
+Agent Action ───────────────────────────────────────────────────────────────────
+
+Summary: Re-run test with valid table name
+
+Thought:
+The table name "T1" is only 2 chars (min is 3). Let me use a valid name.
+
+$ sed -i 's/T1/TestTbl/g' /tmp/t.sh && bash /tmp/t.sh 2>&1
+
+Tokens: ↑ input 329.61K • cache hit 84.93% • ↓ output 28.73K • $ 1.1687
+
+Observation ────────────────────────────────────────────────────────────────────
+
+Tool: terminal
+Result:
+[?2004l=== create-table (full) ===
+{"TableDescription": {"AttributeDefinitions": [{"AttributeName": "id", 
+"AttributeType": "S"}], "TableName": "TestTbl", "KeySchema": [{"AttributeName": 
+"id", "KeyType": "HASH"}], "TableStatus": "ACTIVE", "CreationDateTime": 
+1783967155.248, "ProvisionedThroughput": {"LastIncreaseDateTime": 0.0, 
+"LastDecreaseDateTime": 0.0, "NumberOfDecreasesToday": 0, "ReadCapacityUnits": 
+0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": 
+"arn:aws:dynamodb:ddblocal:000000000000:table/TestTbl", "BillingModeSummary": 
+{"BillingMode": "PAY_PER_REQUEST", "LastUpdateToPayPerRequestDateTime": 
+1783967155.248}, "DeletionProtectionEnabled": false}}
+exit=0
+=== recreate (ResourceInUse) ===
+An error occurred (ResourceInUseException) when calling the CreateTable 
+operation: Cannot create preexisting table
+exit=254
+=== list-tables ===
+{"TableNames": ["TestTbl"]}
+exit=0
+=== update-item SET (write) ===
+{}
+exit=0
+=== get-item consistent ===
+{"Item": {"v": {"S": "hello"}, "id": {"S": "k1"}}}
+exit=0
+=== ADD numeric ===
+{}
+exit=0
+{"Item": {"v": {"S": "hello"}, "c": {"N": "1"}, "id": {"S": "k1"}}}
+exit=0
+=== query ===
+{"Items": [{"v": {"S": "hello"}, "c": {"N": "1"}, "id": {"S": "k1"}}], "Count": 
+1, "ScannedCount": 1}
+exit=0
+=== get-item missing key (no Item) ===
+{}
+exit=0
+=== delete-item ===
+{}
+exit=0
+{}
+exit=0
+=== delete-item nonexistent (idempotent) ===
+{"ConsumedCapacity": {"TableName": "TestTbl", "CapacityUnits": 1.0}}
+exit=0
+=== reserved word validation (Status unescaped) ===
+An error occurred (ValidationException) when calling the UpdateItem operation: 
+Invalid UpdateExpression: Attribute name is a reserved keyword; reserved 
+keyword: Status
+exit=254
+=== reserved word aliased ===
+{}
+exit=0
+=== condition fail ===
+An error occurred (ConditionalCheckFailedException) when calling the DeleteItem 
+operation: The conditional request failed
+exit=254
+[?2004h
+
+📁 Working directory: /tmp
+🐍 Python interpreter: /usr/local/bin/python
+✅ Exit code: 0
+
+Agent Action ───────────────────────────────────────────────────────────────────
+
+Summary: Create error-case test script
+
+Thought:
+All behaviors work correctly. Now let me test the usage/error cases and verify 
+stdout/stderr separation.
+
+Action: FileEditorAction
+
+Arguments:
+  command: "create"
+  path: "/tmp/e.sh"
+  file_text: 
+    #!/bin/bash
+    cd /tmp
+    run() {
+      echo "### $*"
+      out=$(aws "$@" 2>/tmp/err); code=$?
+      echo "exit=$code stdout=[$out] stderr=[$(cat /tmp/err)]"
+    }
+    BIG=$(python3 -c "print('a'*512)")
+    run dynamodb create-table
+    run dynamodb create-table --table-name Tbl3 --not-a-real-flag x
+    run dynamodb create-table --table-name
+    run dynamodb create-table --table-name Tbl3 --attribute-definitions '{not 
+valid json'
+    run dynamodb create-table --table-name Tbl3 --table-name Tbl3
+    run dynamodb create-table --table-name "$BIG"
+    run dynamodb delete-item --key '{"id":{"S":"k"}}'
+    run dynamodb delete-item --table-name Tbl3
+    run dynamodb delete-item --table-name Tbl3 --key '{"id":{"S":"k"}}' 
+--not-a-real-flag x
+    run dynamodb delete-item --table-name --key '{"id":{"S":"k"}}'
+    run dynamodb get-item --table-name Tbl3 --key '{"id":{"S":"k"}}' 
+--table-name Tbl3
+    run dynamodb delete-table
+    run dynamodb query
+    run dynamodb query --table-name Tbl3 --attribute-definitions '{not valid 
+json'
+    run dynamodb update-item --key '{"id":{"S":"k"}}'
+    echo "--- service-modeled (nonexistent table) ---"
+    run dynamodb get-item --table-name NoSuchTable --key '{"id":{"S":"k"}}'
+    run dynamodb delete-table --table-name NoSuchTable
+    run dynamodb query --table-name NoSuchTable
+    echo "--- list-tables limit ---"
+    run dynamodb list-tables --limit 1
+    echo "--- delete-table success ---"
+    run dynamodb delete-table --table-name TestTbl
+    run dynamodb list-tables
+    
+
+  kind: "FileEditorAction"
+
+Tokens: ↑ input 380.52K • cache hit 86.62% • ↓ output 29.67K • $ 1.2248
+
+Observation ────────────────────────────────────────────────────────────────────
+
+Tool: file_editor
+Result:
+[File /tmp/e.sh edited with 1 changes.]
+[begin of edit 1 / 1]
+(content before edit)
+  1|
+(content after edit)
++ 1|#!/bin/bash
++ 2|cd /tmp
++ 3|run() {
++ 4|  echo "### $*"
++ 5|  out=$(aws "$@" 2>/tmp/err); code=$?
++ 6|  echo "exit=$code stdout=[$out] stderr=[$(cat /tmp/err)]"
++ 7|}
++ 8|BIG=$(python3 -c "print('a'*512)")
++ 9|run dynamodb create-table
++10|run dynamodb create-table --table-name Tbl3 --not-a-real-flag x
++11|run dynamodb create-table --table-name
++12|run dynamodb create-table --table-name Tbl3 --attribute-definitions '{not 
+valid json'
++13|run dynamodb create-table --table-name Tbl3 --table-name Tbl3
++14|run dynamodb create-table --table-name "$BIG"
++15|run dynamodb delete-item --key '{"id":{"S":"k"}}'
++16|run dynamodb delete-item --table-name Tbl3
++17|run dynamodb delete-item --table-name Tbl3 --key '{"id":{"S":"k"}}' 
+--not-a-real-flag x
++18|run dynamodb delete-item --table-name --key '{"id":{"S":"k"}}'
++19|run dynamodb get-item --table-name Tbl3 --key '{"id":{"S":"k"}}' 
+--table-name Tbl3
++20|run dynamodb delete-table
++21|run dynamodb query
++22|run dynamodb query --table-name Tbl3 --attribute-definitions '{not valid 
+json'
++23|run dynamodb update-item --key '{"id":{"S":"k"}}'
++24|echo "--- service-modeled (nonexistent table) ---"
++25|run dynamodb get-item --table-name NoSuchTable --key '{"id":{"S":"k"}}'
++26|run dynamodb delete-table --table-name NoSuchTable
++27|run dynamodb query --table-name NoSuchTable
++28|echo "--- list-tables limit ---"
++29|run dynamodb list-tables --limit 1
++30|echo "--- delete-table success ---"
++31|run dynamodb delete-table --table-name TestTbl
++32|run dynamodb list-tables
+ 33|
+[end of edit 1 / 1]
+
+Agent Action ───────────────────────────────────────────────────────────────────
+
+Summary: Run error-case tests
+
+$ bash /tmp/e.sh 2>&1
+
+Tokens: ↑ input 432.39K • cache hit 88.00% • ↓ output 29.79K • $ 1.2592
+
+Observation ────────────────────────────────────────────────────────────────────
+
+Tool: terminal
+Result:
+[?2004l### dynamodb create-table
+exit=252 stdout=[] stderr=[usage: missing required option: --table-name]
+### dynamodb create-table --table-name Tbl3 --not-a-real-flag x
+exit=252 stdout=[] stderr=[Unknown options: --not-a-real-flag]
+### dynamodb create-table --table-name
+exit=252 stdout=[] stderr=[usage: option --table-name requires a value]
+### dynamodb create-table --table-name Tbl3 --attribute-definitions {not valid 
+json
+exit=252 stdout=[] stderr=[Parameter validation failed: invalid JSON value]
+### dynamodb create-table --table-name Tbl3 --table-name Tbl3
+exit=252 stdout=[] stderr=[usage: duplicate option: --table-name]
+### dynamodb create-table --table-name 
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+exit=254 stdout=[] stderr=[An error occurred (ValidationException) when calling 
+the CreateTable operation: Invalid table/index name.  Table/index names must be 
+between 3 and 255 characters long, and may contain only the characters a-z, A-Z,
+0-9, '_', '-', and '.']
+### dynamodb delete-item --key {"id":{"S":"k"}}
+exit=252 stdout=[] stderr=[usage: missing required option: --table-name]
+### dynamodb delete-item --table-name Tbl3
+exit=252 stdout=[] stderr=[usage: missing required option: --key]
+### dynamodb delete-item --table-name Tbl3 --key {"id":{"S":"k"}} 
+--not-a-real-flag x
+exit=252 stdout=[] stderr=[Unknown options: --not-a-real-flag]
+### dynamodb delete-item --table-name --key {"id":{"S":"k"}}
+exit=252 stdout=[] stderr=[usage: option --table-name requires a value]
+### dynamodb get-item --table-name Tbl3 --key {"id":{"S":"k"}} --table-name Tbl3
+exit=252 stdout=[] stderr=[usage: duplicate option: --table-name]
+### dynamodb delete-table
+exit=252 stdout=[] stderr=[usage: missing required option: --table-name]
+### dynamodb query
+exit=252 stdout=[] stderr=[usage: missing required option: --table-name]
+### dynamodb query --table-name Tbl3 --attribute-definitions {not valid json
+exit=252 stdout=[] stderr=[Unknown options: --attribute-definitions]
+### dynamodb update-item --key {"id":{"S":"k"}}
+exit=252 stdout=[] stderr=[usage: missing required option: --table-name]
+--- service-modeled (nonexistent table) ---
+### dynamodb get-item --table-name NoSuchTable --key {"id":{"S":"k"}}
+exit=254 stdout=[] stderr=[An error occurred (ResourceNotFoundException) when 
+calling the GetItem operation: Cannot do operations on a non-existent table]
+### dynamodb delete-table --table-name NoSuchTable
+exit=254 stdout=[] stderr=[An error occurred (ResourceNotFoundException) when 
+calling the DeleteTable operation: Cannot do operations on a non-existent table]
+### dynamodb query --table-name NoSuchTable
+exit=254 stdout=[] stderr=[An error occurred (ResourceNotFoundException) when 
+calling the Query operation: Cannot do operations on a non-existent table]
+--- list-tables limit ---
+### dynamodb list-tables --limit 1
+exit=0 stdout=[{"TableNames": ["TestTbl"]}] stderr=[]
+--- delete-table success ---
+### dynamodb delete-table --table-name TestTbl
+exit=0 stdout=[{"TableDescription": {"AttributeDefinitions": [{"AttributeName": 
+"id", "AttributeType": "S"}], "TableName": "TestTbl", "KeySchema": 
+[{"AttributeName": "id", "KeyType": "HASH"}], "TableStatus": "ACTIVE", 
+"CreationDateTime": 1783967155.248, "ProvisionedThroughput": 
+{"LastIncreaseDateTime": 0.0, "LastDecreaseDateTime": 0.0, 
+"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, 
+"TableSizeBytes": 11, "ItemCount": 1, "TableArn": 
+"arn:aws:dynamodb:ddblocal:000000000000:table/TestTbl", "BillingModeSummary": 
+{"BillingMode": "PAY_PER_REQUEST", "LastUpdateToPayPerRequestDateTime": 
+1783967155.248}, "DeletionProtectionEnabled": false}}] stderr=[]
+### dynamodb list-tables
+exit=0 stdout=[{"TableNames": []}] stderr=[]
+[?2004h
+
+📁 Working directory: /tmp
+🐍 Python interpreter: /usr/local/bin/python
+✅ Exit code: 0
+
+Agent Action ───────────────────────────────────────────────────────────────────
+
+Summary: Test provisioned/composite/non-key query
+
+Thought:
+Excellent! All cases pass. Let me test a couple more edge cases: PROVISIONED 
+billing mode, composite key with multiple attribute-definitions, and query on a 
+non-key attribute.
+
+Action: FileEditorAction
+
+Arguments:
+  command: "create"
+  path: "/tmp/f.sh"
+  file_text: 
+    #!/bin/bash
+    cd /tmp
+    run() { echo "### $*"; out=$(aws "$@" 2>/tmp/err); code=$?; echo "exit=$code
+out=[$out] err=[$(cat /tmp/err)]"; }
+    run dynamodb create-table --table-name ProvT --attribute-definitions 
+AttributeName=id,AttributeType=S --key-schema AttributeName=id,KeyType=HASH 
+--billing-mode PROVISIONED --provisioned-throughput 
+ReadCapacityUnits=5,WriteCapacityUnits=5
+    run dynamodb create-table --table-name CompT --attribute-definitions 
+AttributeName=pk,AttributeType=S AttributeName=sk,AttributeType=S --key-schema 
+AttributeName=pk,KeyType=HASH AttributeName=sk,KeyType=RANGE --billing-mode 
+PAY_PER_REQUEST
+    run dynamodb update-item --table-name CompT --key 
+'{"pk":{"S":"p1"},"sk":{"S":"s1"}}' --update-expression 'SET v = :v' 
+--expression-attribute-values '{":v":{"N":"10"}}'
+    run dynamodb query --table-name CompT --key-condition-expression 'v = :x' 
+--expression-attribute-values '{":x":{"N":"10"}}'
+    run dynamodb delete-table --table-name ProvT
+    run dynamodb delete-table --table-name CompT
+    
+
+  kind: "FileEditorAction"
+
+Tokens: ↑ input 486.64K • cache hit 88.85% • ↓ output 30.71K • $ 1.3230
+
+Observation ────────────────────────────────────────────────────────────────────
+
+Tool: file_editor
+Result:
+[File /tmp/f.sh edited with 1 changes.]
+[begin of edit 1 / 1]
+(content before edit)
+ 1|
+(content after edit)
++1|#!/bin/bash
++2|cd /tmp
++3|run() { echo "### $*"; out=$(aws "$@" 2>/tmp/err); code=$?; echo "exit=$code 
+out=[$out] err=[$(cat /tmp/err)]"; }
++4|run dynamodb create-table --table-name ProvT --attribute-definitions 
+AttributeName=id,AttributeType=S --key-schema AttributeName=id,KeyType=HASH 
+--billing-mode PROVISIONED --provisioned-throughput 
+ReadCapacityUnits=5,WriteCapacityUnits=5
++5|run dynamodb create-table --table-name CompT --attribute-definitions 
+AttributeName=pk,AttributeType=S AttributeName=sk,AttributeType=S --key-schema 
+AttributeName=pk,KeyType=HASH AttributeName=sk,KeyType=RANGE --billing-mode 
+PAY_PER_REQUEST
++6|run dynamodb update-item --table-name CompT --key 
+'{"pk":{"S":"p1"},"sk":{"S":"s1"}}' --update-expression 'SET v = :v' 
+--expression-attribute-values '{":v":{"N":"10"}}'
++7|run dynamodb query --table-name CompT --key-condition-expression 'v = :x' 
+--expression-attribute-values '{":x":{"N":"10"}}'
++8|run dynamodb delete-table --table-name ProvT
++9|run dynamodb delete-table --table-name CompT
+10|
+[end of edit 1 / 1]
+
+Agent Action ───────────────────────────────────────────────────────────────────
+
+Summary: Run provisioned/composite tests
+
+$ bash /tmp/f.sh 2>&1
+
+Tokens: ↑ input 541.84K • cache hit 89.81% • ↓ output 30.83K • $ 1.3591
+
+Observation ────────────────────────────────────────────────────────────────────
+
+Tool: terminal
+Result:
+[?2004l### dynamodb create-table --table-name ProvT --attribute-definitions 
+AttributeName=id,AttributeType=S --key-schema AttributeName=id,KeyType=HASH 
+--billing-mode PROVISIONED --provisioned-throughput 
+ReadCapacityUnits=5,WriteCapacityUnits=5
+exit=0 out=[{"TableDescription": {"AttributeDefinitions": [{"AttributeName": 
+"id", "AttributeType": "S"}], "TableName": "ProvT", "KeySchema": 
+[{"AttributeName": "id", "KeyType": "HASH"}], "TableStatus": "ACTIVE", 
+"CreationDateTime": 1783967190.194, "ProvisionedThroughput": 
+{"LastIncreaseDateTime": 0.0, "LastDecreaseDateTime": 0.0, 
+"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 5, "WriteCapacityUnits": 5}, 
+"TableSizeBytes": 0, "ItemCount": 0, "TableArn": 
+"arn:aws:dynamodb:ddblocal:000000000000:table/ProvT", 
+"DeletionProtectionEnabled": false}}] err=[]
+### dynamodb create-table --table-name CompT --attribute-definitions 
+AttributeName=pk,AttributeType=S AttributeName=sk,AttributeType=S --key-schema 
+AttributeName=pk,KeyType=HASH AttributeName=sk,KeyType=RANGE --billing-mode 
+PAY_PER_REQUEST
+exit=0 out=[{"TableDescription": {"AttributeDefinitions": [{"AttributeName": 
+"pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], 
+"TableName": "CompT", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, 
+{"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", 
+"CreationDateTime": 1783967190.293, "ProvisionedThroughput": 
+{"LastIncreaseDateTime": 0.0, "LastDecreaseDateTime": 0.0, 
+"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, 
+"TableSizeBytes": 0, "ItemCount": 0, "TableArn": 
+"arn:aws:dynamodb:ddblocal:000000000000:table/CompT", "BillingModeSummary": 
+{"BillingMode": "PAY_PER_REQUEST", "LastUpdateToPayPerRequestDateTime": 
+1783967190.293}, "DeletionProtectionEnabled": false}}] err=[]
+### dynamodb update-item --table-name CompT --key 
+{"pk":{"S":"p1"},"sk":{"S":"s1"}} --update-expression SET v = :v 
+--expression-attribute-values {":v":{"N":"10"}}
+exit=0 out=[{}] err=[]
+### dynamodb query --table-name CompT --key-condition-expression v = :x 
+--expression-attribute-values {":x":{"N":"10"}}
+exit=254 out=[] err=[An error occurred (ValidationException) when calling the 
+Query operation: Query condition missed key schema element]
+### dynamodb delete-table --table-name ProvT
+exit=0 out=[{"TableDescription": {"AttributeDefinitions": [{"AttributeName": 
+"id", "AttributeType": "S"}], "TableName": "ProvT", "KeySchema": 
+[{"AttributeName": "id", "KeyType": "HASH"}], "TableStatus": "ACTIVE", 
+"CreationDateTime": 1783967190.194, "ProvisionedThroughput": 
+{"LastIncreaseDateTime": 0.0, "LastDecreaseDateTime": 0.0, 
+"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 5, "WriteCapacityUnits": 5}, 
+"TableSizeBytes": 0, "ItemCount": 0, "TableArn": 
+"arn:aws:dynamodb:ddblocal:000000000000:table/ProvT", 
+"DeletionProtectionEnabled": false}}] err=[]
+### dynamodb delete-table --table-name CompT
+exit=0 out=[{"TableDescription": {"AttributeDefinitions": [{"AttributeName": 
+"pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], 
+"TableName": "CompT", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, 
+{"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", 
+"CreationDateTime": 1783967190.293, "ProvisionedThroughput": 
+{"LastIncreaseDateTime": 0.0, "LastDecreaseDateTime": 0.0, 
+"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, 
+"TableSizeBytes": 11, "ItemCount": 1, "TableArn": 
+"arn:aws:dynamodb:ddblocal:000000000000:table/CompT", "BillingModeSummary": 
+{"BillingMode": "PAY_PER_REQUEST", "LastUpdateToPayPerRequestDateTime": 
+1783967190.293}, "DeletionProtectionEnabled": false}}] err=[]
+[?2004h
+
+📁 Working directory: /tmp
+🐍 Python interpreter: /usr/local/bin/python
+✅ Exit code: 0
+
+Agent Action ───────────────────────────────────────────────────────────────────
+
+Summary: Test no-schema and mismatch create-table, clean temp files
+
+Thought:
+All edge cases pass. Let me verify the "create-table with only table-name" (no 
+schema) and "key not in definitions" cases, then clean up temp files.
+
+$ cd /tmp
+echo "### only table-name (no schema)"; aws dynamodb create-table --table-name 
+LonelyTbl 2>&1; echo "exit=$?"
+echo "### key attr missing from defs"; aws dynamodb create-table --table-name 
+MismatchTbl --attribute-definitions AttributeName=id,AttributeType=S 
+--key-schema AttributeName=other,KeyType=HASH --billing-mode PAY_PER_REQUEST 
+2>&1; echo "exit=$?"
+rm -f /tmp/t.sh /tmp/e.sh /tmp/f.sh /tmp/err
+
+Tokens: ↑ input 599.14K • cache hit 90.43% • ↓ output 31.33K • $ 1.4125
+
+Observation ────────────────────────────────────────────────────────────────────
+
+Tool: terminal
+Result:
+❌ [An error occurred during execution.]
+Cannot execute multiple commands at once.
+Please run each command separately OR chain them into a single command via && or
+;
+Provided commands:
+(1) cd /tmp
+(2) echo "### only table-name (no schema)"; aws dynamodb create-table 
+--table-name LonelyTbl 2>&1; echo "exit=$?"
+(3) echo "### key attr missing from defs"; aws dynamodb create-table 
+--table-name MismatchTbl --attribute-definitions 
+AttributeName=id,AttributeType=S --key-schema AttributeName=other,KeyType=HASH 
+--billing-mode PAY_PER_REQUEST 2>&1; echo "exit=$?"
+(4) rm -f /tmp/t.sh /tmp/e.sh /tmp/f.sh /tmp/err
+
+⏳ Process still running (soft timeout)
+
+Agent Action ───────────────────────────────────────────────────────────────────
+
+Summary: Test no-schema/mismatch create-table and clean up
+
+$ cd /tmp && { echo "### only table-name"; aws dynamodb create-table 
+--table-name LonelyTbl 2>&1; echo "exit=$?"; echo "### key not in defs"; aws 
+dynamodb create-table --table-name MismatchTbl --attribute-definitions 
+AttributeName=id,AttributeType=S --key-schema AttributeName=other,KeyType=HASH 
+--billing-mode PAY_PER_REQUEST 2>&1; echo "exit=$?"; rm -f /tmp/t.sh /tmp/e.sh 
+/tmp/f.sh /tmp/err; }
+
+Tokens: ↑ input 657.22K • cache hit 91.16% • ↓ output 31.69K • $ 1.4549
+
+Observation ────────────────────────────────────────────────────────────────────
+
+Tool: terminal
+Result:
+[?2004l### only table-name
+An error occurred (ValidationException) when calling the CreateTable operation: 
+No defined key schema.  A key schema containing at least a hash key must be 
+defined for all tables
+exit=254
+### key not in defs
+An error occurred (ValidationException) when calling the CreateTable operation: 
+Hash Key not specified in Attribute Definitions.  Type unknown.
+exit=254
+[?2004h
+
+📁 Working directory: /tmp
+🐍 Python interpreter: /usr/local/bin/python
+✅ Exit code: 0
+
+Agent Action ───────────────────────────────────────────────────────────────────
+
+Summary: Write repository memory notes to AGENTS.md
+
+Thought:
+All behaviors are correct. Let me record repository knowledge and mark tasks 
+complete.
+
+Action: FileEditorAction
+
+Arguments:
+  command: "create"
+  path: "/workspace/AGENTS.md"
+  file_text: 
+    # Repository: `aws dynamodb` CLI
+    
+    ## Goal
+    Provide an executable `aws` on `$PATH` implementing a subset of `aws 
+dynamodb`:
+    create-table, delete-item, delete-table, get-item, list-tables, query,
+    update-item (plus put-item as a bonus).
+    
+    ## Environment
+    - Real DynamoDB Local runs at `AWS_ENDPOINT_URL_DYNAMODB` (e.g. 
+`http://ddb:8000`);
+      state is stored server-side, so cross-command consistency is automatic.
+    - No `boto3`/`awscli` available. Python 3.12 stdlib only.
+    - Credentials/region come from env (`AWS_ACCESS_KEY_ID`, 
+`AWS_SECRET_ACCESS_KEY`,
+      `AWS_DEFAULT_REGION`). Endpoint requires valid SigV4 auth.
+    
+    ## Implementation
+    - Single file: `/workspace/submission/aws` (Python, `chmod +x`).
+    - Talks to DynamoDB JSON protocol (`application/x-amz-json-1.0`,
+      `X-Amz-Target: DynamoDB_20120810.<Operation>`) using stdlib `urllib` +
+      hand-rolled SigV4 signing.
+    - Client-side validation kept minimal (per spec): unknown flag, duplicate 
+flag,
+      missing required flag (`--table-name`, `--key`/`--item`), missing option 
+value,
+      malformed JSON/shorthand -> exit 252. Everything else (bad table names,
+      missing schema, key/definition mismatch, conditional checks) is delegated 
+to
+      the server, which returns modeled exceptions -> exit 254.
+    
+    ## Exit codes
+    - 0 success; 252 usage/param error; 254 service-modeled error; 255 general.
+    - Tests only check `returncode != 0` on failure, so exact non-zero code is
+      flexible. stdout empty on failure, stderr empty on success, never a 
+traceback.
+    
+    ## Notes / gotchas
+    - DynamoDB table names must be 3-255 chars (min 3!). Use e.g. `TestTbl` in 
+tests.
+    - Numbers in AttributeValues are JSON strings: `{"N":"5"}` (pass-through).
+    - Shorthand list syntax (`AttributeName=id,AttributeType=S ...`) may span
+      multiple argv tokens; list-kind flags consume tokens until the next 
+`--flag`.
+    - Provisioned throughput shorthand coerces Read/WriteCapacityUnits to ints.
+    
+
+  kind: "FileEditorAction"
+
+Tokens: ↑ input 715.86K • cache hit 91.80% • ↓ output 32.73K • $ 1.5134
+
+Observation ────────────────────────────────────────────────────────────────────
+
+Tool: file_editor
+Result:
+[File /workspace/AGENTS.md edited with 1 changes.]
+[begin of edit 1 / 1]
+(content before edit)
+ 1|
+(content after edit)
++1|# Repository: `aws dynamodb` CLI
+ 2|
++3|## Goal
++4|Provide an executable `aws` on `$PATH` implementing a subset of `aws 
+dynamodb`:
++5|create-table, delete-item, delete-table, get-item, list-tables, query,
++6|update-item (plus put-item as a bonus).
++7|
++8|## Environment
++9|- Real DynamoDB Local runs at `AWS_ENDPOINT_URL_DYNAMODB` (e.g. 
+`http://ddb:8000`);
++10|  state is stored server-side, so cross-command consistency is automatic.
++11|- No `boto3`/`awscli` available. Python 3.12 stdlib only.
++12|- Credentials/region come from env (`AWS_ACCESS_KEY_ID`, 
+`AWS_SECRET_ACCESS_KEY`,
++13|  `AWS_DEFAULT_REGION`). Endpoint requires valid SigV4 auth.
++14|
++15|## Implementation
++16|- Single file: `/workspace/submission/aws` (Python, `chmod +x`).
++17|- Talks to DynamoDB JSON protocol (`application/x-amz-json-1.0`,
++18|  `X-Amz-Target: DynamoDB_20120810.<Operation>`) using stdlib `urllib` +
++19|  hand-rolled SigV4 signing.
++20|- Client-side validation kept minimal (per spec): unknown flag, duplicate 
+flag,
++21|  missing required flag (`--table-name`, `--key`/`--item`), missing option 
+value,
++22|  malformed JSON/shorthand -> exit 252. Everything else (bad table names,
++23|  missing schema, key/definition mismatch, conditional checks) is delegated 
+to
++24|  the server, which returns modeled exceptions -> exit 254.
++25|
++26|## Exit codes
++27|- 0 success; 252 usage/param error; 254 service-modeled error; 255 general.
++28|- Tests only check `returncode != 0` on failure, so exact non-zero code is
++29|  flexible. stdout empty on failure, stderr empty on success, never a 
+traceback.
++30|
++31|## Notes / gotchas
++32|- DynamoDB table names must be 3-255 chars (min 3!). Use e.g. `TestTbl` in 
+tests.
++33|- Numbers in AttributeValues are JSON strings: `{"N":"5"}` (pass-through).
++34|- Shorthand list syntax (`AttributeName=id,AttributeType=S ...`) may span
++35|  multiple argv tokens; list-kind flags consume tokens until the next 
+`--flag`.
++36|- Provisioned throughput shorthand coerces Read/WriteCapacityUnits to ints.
++37|
+[end of edit 1 / 1]
+
+Agent Action ───────────────────────────────────────────────────────────────────
+
+Summary: Mark all implementation tasks complete
+
+📋 Update Task List (5 tasks)
+
+Tokens: ↑ input 775.56K • cache hit 92.30% • ↓ output 33.04K • $ 1.5573
+
+Observation ────────────────────────────────────────────────────────────────────
+
+Tool: task_tracker
+Result:
+✅ Task list updated: 5 done
+
+✅ 1. Implement SigV4 signing + HTTP client (stdlib only)
+✅ 2. Implement argv parser with per-command flag specs, error handling (252)
+✅ 3. Implement value serialization (json/shorthand/struct/list)
+✅ 4. Dispatch commands to DynamoDB API, map errors to exit codes
+✅ 5. Install as executable /workspace/submission/aws and test end-to-end
+
+Message from Agent ─────────────────────────────────────────────────────────────
+
+The implementation is complete and fully tested.
+
+## Summary
+
+I built an `aws dynamodb` CLI at `/workspace/submission/aws` (a single 
+executable Python 3 script using **only the standard library**), which is first 
+on `$PATH`.
+
+### How it works
+The environment provides a real **DynamoDB Local** endpoint 
+(`AWS_ENDPOINT_URL_DYNAMODB=http://ddb:8000`) but **no boto3/awscli**. So the 
+script:
+1. Dispatches on the `dynamodb <command>` token.
+2. Parses flags per-command, translating them into DynamoDB JSON (1.0) API 
+requests.
+3. Signs each request with hand-rolled **AWS SigV4** (using `hmac`/`hashlib`) 
+and sends it via `urllib`.
+4. Prints the service's JSON response to stdout, or maps errors to stderr + exit
+codes.
+
+Because state lives server-side, cross-command consistency 
+(create→write→read→query→delete) is automatic and strongly consistent.
+
+### Commands implemented
+`create-table`, `delete-item`, `delete-table`, `get-item`, `list-tables`, 
+`query`, `update-item` (plus `put-item` as a low-risk bonus, since the spec's 
+cross-command notes reference it).
+
+### Error handling / exit codes
+- **252** — client usage errors: unknown flag, duplicate flag, missing required 
+flag (`--table-name`/`--key`), missing option value, malformed JSON/shorthand.
+- **254** — service-modeled exceptions returned by DynamoDB 
+(`ResourceNotFoundException`, `ResourceInUseException`, 
+`ConditionalCheckFailedException`, `ValidationException`), formatted as `An 
+error occurred (<Code>) when calling the <Op> operation: <message>`.
+- **255** — general/connection errors. Client-side validation is kept minimal 
+per the spec (bad table names, missing schema, etc. are left to the service). 
+stdout is empty on failure, stderr empty on success, and no tracebacks ever 
+leak.
+
+### Verified behaviors
+- Full lifecycle: create-table → update-item (SET/ADD writes) → get-item 
+(strongly consistent) → query → delete-item → delete-table, with correct JSON 
+shapes.
+- Idempotent delete of missing keys; missing-key get returns no `Item`; recreate
+→ `ResourceInUseException`; missing table → `ResourceNotFoundException`; 
+reserved-word (`Status`) → `ValidationException` (and works when aliased via 
+`--expression-attribute-names`); failing `--condition-expression` → 
+`ConditionalCheckFailedException`; non-key query → `ValidationException`.
+- Shorthand parsing for composite keys, multiple attribute-definitions, and 
+`PROVISIONED --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5` 
+(numeric coercion).
+- All documented error-case argv patterns return the correct non-zero exit codes
+with clean stderr.
+
+I also recorded repository context in `/workspace/AGENTS.md`.
+
+Tokens: ↑ input 835.6K • cache hit 92.81% • ↓ output 34.06K • $ 1.6147
+
+Captured system prompt (11883 chars)
+Captured 5 tool definitions
+Agent completed. Trajectory saved to /logs/agent/trajectory.json
+Total cost: $1.6147

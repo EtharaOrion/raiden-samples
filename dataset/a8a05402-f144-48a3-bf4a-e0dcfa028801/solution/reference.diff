@@ -1,0 +1,220 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,214 @@
++import sys
++import os
++import json
++import urllib.request
++import urllib.error
++import base64
++
++USAGE_EXIT = 252
++SERVICE_EXIT = 254
++
++# Flag specs per subcommand: flag -> (field, type)
++# type: 'str', 'json', 'int', 'bool'
++SPECS = {
++    "delete-item": {
++        "--condition-expression": ("ConditionExpression", "str"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--expected": ("Expected", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--key": ("Key", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++        "--return-values": ("ReturnValues", "str"),
++        "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++    "delete-table": {
++        "--table-name": ("TableName", "str"),
++    },
++    "get-item": {
++        "--attributes-to-get": ("AttributesToGet", "json"),
++        "--consistent-read": ("ConsistentRead", "bool"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--key": ("Key", "json"),
++        "--projection-expression": ("ProjectionExpression", "str"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++    "list-tables": {
++        "--exclusive-start-table-name": ("ExclusiveStartTableName", "str"),
++        "--limit": ("Limit", "int"),
++    },
++    "put-item": {
++        "--condition-expression": ("ConditionExpression", "str"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--expected": ("Expected", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--item": ("Item", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++        "--return-values": ("ReturnValues", "str"),
++        "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++    "query": {
++        "--attributes-to-get": ("AttributesToGet", "json"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--consistent-read": ("ConsistentRead", "bool"),
++        "--exclusive-start-key": ("ExclusiveStartKey", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--filter-expression": ("FilterExpression", "str"),
++        "--index-name": ("IndexName", "str"),
++        "--key-condition-expression": ("KeyConditionExpression", "str"),
++        "--key-conditions": ("KeyConditions", "json"),
++        "--limit": ("Limit", "int"),
++        "--projection-expression": ("ProjectionExpression", "str"),
++        "--query-filter": ("QueryFilter", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--scan-index-forward": ("ScanIndexForward", "bool"),
++        "--select": ("Select", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++    "update-item": {
++        "--attribute-updates": ("AttributeUpdates", "json"),
++        "--condition-expression": ("ConditionExpression", "str"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--expected": ("Expected", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--key": ("Key", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++        "--return-values": ("ReturnValues", "str"),
++        "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++        "--table-name": ("TableName", "str"),
++        "--update-expression": ("UpdateExpression", "str"),
++    },
++}
++
++OP_MAP = {
++    "delete-item": "DeleteItem",
++    "delete-table": "DeleteTable",
++    "get-item": "GetItem",
++    "list-tables": "ListTables",
++    "put-item": "PutItem",
++    "query": "Query",
++    "update-item": "UpdateItem",
++}
++
++# no-value (flag store_true) flags
++BOOL_FLAGS_NEGATABLE = {"--scan-index-forward"}
++
++
++def usage_error(msg):
++    sys.stderr.write("usage error: " + msg + "\n")
++    sys.exit(USAGE_EXIT)
++
++
++def parse_args(sub, args):
++    spec = SPECS[sub]
++    result = {}
++    seen = set()
++    i = 0
++    n = len(args)
++    while i < n:
++        tok = args[i]
++        if not tok.startswith("--"):
++            usage_error("unexpected argument: " + tok)
++        if tok not in spec:
++            usage_error("unknown flag: " + tok)
++        if tok in seen:
++            usage_error("duplicate flag: " + tok)
++        seen.add(tok)
++        field, typ = spec[tok]
++        if typ == "bool":
++            # bool flags may be store_true style, but scan-index-forward takes value
++            if tok == "--consistent-read":
++                # store_true (also negatable --no-consistent-read handled elsewhere)
++                result[field] = True
++                i += 1
++                continue
++            # scan-index-forward: takes a value
++            if i + 1 >= n:
++                usage_error("missing value for " + tok)
++            val = args[i + 1]
++            result[field] = (val.lower() == "true")
++            i += 2
++            continue
++        # value-taking
++        if i + 1 >= n:
++            usage_error("missing value for " + tok)
++        val = args[i + 1]
++        i += 2
++        if val == "" and field == "TableName":
++            usage_error("empty value for " + tok)
++        if typ == "int":
++            try:
++                result[field] = int(val)
++            except ValueError:
++                usage_error("invalid int for " + tok)
++        elif typ == "json":
++            try:
++                result[field] = json.loads(val)
++            except (ValueError, json.JSONDecodeError):
++                usage_error("invalid JSON for " + tok)
++        else:
++            result[field] = val
++    return result
++
++
++def call(op, payload):
++    endpoint = os.environ.get("AWS_ENDPOINT_URL_DYNAMODB") or os.environ["AWS_ENDPOINT_URL"]
++    data = json.dumps(payload).encode("utf-8")
++    req = urllib.request.Request(endpoint, data=data, method="POST")
++    req.add_header("Content-Type", "application/x-amz-json-1.0")
++    req.add_header("X-Amz-Target", "DynamoDB_20120810." + op)
++    req.add_header("Authorization",
++                   "AWS4-HMAC-SHA256 Credential=dummy/20200101/us-east-1/dynamodb/aws4_request, "
++                   "SignedHeaders=content-type;host;x-amz-target, Signature=dummy")
++    try:
++        resp = urllib.request.urlopen(req)
++        body = resp.read().decode("utf-8")
++        if body:
++            return json.loads(body)
++        return {}
++    except urllib.error.HTTPError as e:
++        raw = e.read().decode("utf-8")
++        code = "UnknownError"
++        message = raw
++        try:
++            parsed = json.loads(raw)
++            t = parsed.get("__type", "")
++            if t:
++                code = t.split("#")[-1]
++            message = parsed.get("message", parsed.get("Message", ""))
++        except ValueError:
++            pass
++        sys.stderr.write("An error occurred (" + code + "): " + str(message) + "\n")
++        sys.exit(SERVICE_EXIT)
++    except urllib.error.URLError as e:
++        sys.stderr.write("Connection error: " + str(e) + "\n")
++        sys.exit(SERVICE_EXIT)
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3:
++        usage_error("expected prefix and command")
++    sub = argv[2]
++    if sub not in SPECS:
++        usage_error("unknown command: " + sub)
++    args = argv[3:]
++    params = parse_args(sub, args)
++    op = OP_MAP[sub]
++    result = call(op, params)
++    sys.stdout.write(json.dumps(result, indent=4))
++    sys.stdout.write("\n")
++    sys.exit(0)
++
++
++if __name__ == "__main__":
++    main()

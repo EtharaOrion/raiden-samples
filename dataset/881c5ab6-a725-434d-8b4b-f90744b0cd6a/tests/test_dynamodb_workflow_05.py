@@ -1,0 +1,13 @@
+from _ddb_http import to_item, from_item, to_av, from_av
+
+
+def test_workflow_delete_table_gone(cli, ddb_client, tmp_path):
+    ddb_client.create_table(
+        TableName="WfTblF",
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        BillingMode="PAY_PER_REQUEST")
+    assert "WfTblF" in ddb_client.list_tables()["TableNames"]
+    result = cli("dynamodb", "delete-table", "--table-name", "WfTblF")
+    assert result.returncode == 0
+    assert "WfTblF" not in ddb_client.list_tables()["TableNames"]

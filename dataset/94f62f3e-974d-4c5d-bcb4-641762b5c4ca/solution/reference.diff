@@ -1,0 +1,197 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,191 @@
++import os
++import sys
++import json
++import base64
++import urllib.request
++import urllib.error
++
++TARGET_PREFIX = "DynamoDB_20120810."
++
++
++def get_endpoint():
++    ep = os.environ.get("AWS_ENDPOINT_URL_DYNAMODB") or os.environ.get("AWS_ENDPOINT_URL")
++    if not ep:
++        sys.stderr.write("No endpoint configured\n")
++        sys.exit(254)
++    return ep
++
++
++def call(op, payload):
++    endpoint = get_endpoint()
++    data = json.dumps(payload).encode("utf-8")
++    req = urllib.request.Request(endpoint, data=data, method="POST")
++    req.add_header("Content-Type", "application/x-amz-json-1.0")
++    req.add_header("X-Amz-Target", TARGET_PREFIX + op)
++    req.add_header("Authorization",
++                   "AWS4-HMAC-SHA256 Credential=dummy/20200101/us-east-1/dynamodb/aws4_request, "
++                   "SignedHeaders=host;x-amz-target, Signature=dummy")
++    req.add_header("X-Amz-Date", "20200101T000000Z")
++    try:
++        resp = urllib.request.urlopen(req)
++        body = resp.read().decode("utf-8")
++        if body:
++            return json.loads(body)
++        return {}
++    except urllib.error.HTTPError as e:
++        body = e.read().decode("utf-8")
++        code = "UnknownError"
++        message = body
++        try:
++            parsed = json.loads(body)
++            t = parsed.get("__type", "")
++            if t:
++                code = t.split("#")[-1]
++            message = parsed.get("message") or parsed.get("Message") or ""
++        except Exception:
++            pass
++        sys.stderr.write("\n" + "An error occurred ({0}) when calling the {1} operation: {2}\n".format(code, op, message))
++        sys.exit(254)
++    except urllib.error.URLError as e:
++        sys.stderr.write("Could not connect to the endpoint URL: {0}\n".format(e))
++        sys.exit(254)
++
++
++def usage_error(msg):
++    sys.stderr.write("usage error: {0}\n".format(msg))
++    sys.exit(252)
++
++
++# Flag specifications per subcommand.
++# name -> (field, type) where type is 'str','json','bool','int'
++SPECS = {
++    "delete-item": {
++        "--condition-expression": ("ConditionExpression", "str"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--expected": ("Expected", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--key": ("Key", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++        "--return-values": ("ReturnValues", "str"),
++        "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++    "delete-table": {
++        "--table-name": ("TableName", "str"),
++    },
++    "get-item": {
++        "--attributes-to-get": ("AttributesToGet", "json"),
++        "--consistent-read": ("ConsistentRead", "bool"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--key": ("Key", "json"),
++        "--projection-expression": ("ProjectionExpression", "str"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++    "list-tables": {
++        "--exclusive-start-table-name": ("ExclusiveStartTableName", "str"),
++        "--limit": ("Limit", "int"),
++    },
++    "update-item": {
++        "--attribute-updates": ("AttributeUpdates", "json"),
++        "--condition-expression": ("ConditionExpression", "str"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--expected": ("Expected", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--key": ("Key", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++        "--return-values": ("ReturnValues", "str"),
++        "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++        "--table-name": ("TableName", "str"),
++        "--update-expression": ("UpdateExpression", "str"),
++    },
++}
++
++OP_NAMES = {
++    "delete-item": "DeleteItem",
++    "delete-table": "DeleteTable",
++    "get-item": "GetItem",
++    "list-tables": "ListTables",
++    "update-item": "UpdateItem",
++}
++
++
++def parse_args(subcmd, args):
++    spec = SPECS[subcmd]
++    payload = {}
++    seen = set()
++    i = 0
++    n = len(args)
++    while i < n:
++        tok = args[i]
++        if not tok.startswith("--"):
++            usage_error("Unknown positional argument: {0}".format(tok))
++        if tok not in spec:
++            usage_error("Unknown option: {0}".format(tok))
++        field, typ = spec[tok]
++        if tok in seen:
++            usage_error("Duplicate option: {0}".format(tok))
++        seen.add(tok)
++        if typ == "bool":
++            payload[field] = True
++            i += 1
++            continue
++        # value required
++        if i + 1 >= n:
++            usage_error("Option {0} requires an argument".format(tok))
++        val = args[i + 1]
++        # A value that looks like another known flag = missing arg
++        if val.startswith("--") and val in spec:
++            usage_error("Option {0} requires an argument".format(tok))
++        if typ == "str":
++            if val == "":
++                usage_error("Option {0} requires a non-empty argument".format(tok))
++            payload[field] = val
++        elif typ == "int":
++            try:
++                payload[field] = int(val)
++            except ValueError:
++                usage_error("Option {0} requires an integer".format(tok))
++        elif typ == "json":
++            try:
++                payload[field] = json.loads(val)
++            except ValueError:
++                usage_error("Invalid JSON for {0}".format(tok))
++        i += 2
++    return payload
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3:
++        usage_error("missing command")
++    subcmd = argv[2]
++    if subcmd not in SPECS:
++        usage_error("Unknown command: {0}".format(subcmd))
++    args = argv[3:]
++    payload = parse_args(subcmd, args)
++
++    op = OP_NAMES[subcmd]
++
++    # Required-field validation (client-side, mirrors botocore required params)
++    if subcmd in ("delete-item", "get-item", "update-item"):
++        if "TableName" not in payload:
++            usage_error("--table-name is required")
++        if "Key" not in payload:
++            usage_error("--key is required")
++    elif subcmd == "delete-table":
++        if "TableName" not in payload:
++            usage_error("--table-name is required")
++
++    result = call(op, payload)
++    sys.stdout.write(json.dumps(result, indent=4))
++    sys.stdout.write("\n")
++    sys.exit(0)
++
++
++if __name__ == "__main__":
++    main()

@@ -1,0 +1,339 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,333 @@
++import sys
++import os
++import json
++import base64
++import urllib.request
++import urllib.error
++
++TARGET_PREFIX = "DynamoDB_20120810."
++
++# Flag specifications per subcommand.
++# Each entry: flag -> (field_name, kind)
++# kind: "str", "int", "bool", "json", "list_kv" (list of AttributeName=..,Type=.. style), "kv" (single struct)
++
++def make_spec():
++    return {}
++
++CREATE_TABLE_FLAGS = {
++    "--attribute-definitions": ("AttributeDefinitions", "attrdefs"),
++    "--billing-mode": ("BillingMode", "str"),
++    "--deletion-protection-enabled": ("DeletionProtectionEnabled", "bool"),
++    "--no-deletion-protection-enabled": ("DeletionProtectionEnabled", "boolfalse"),
++    "--global-secondary-indexes": ("GlobalSecondaryIndexes", "json"),
++    "--global-table-settings-replication-mode": ("GlobalTableSettingsReplicationMode", "str"),
++    "--global-table-source-arn": ("GlobalTableSourceArn", "str"),
++    "--key-schema": ("KeySchema", "keyschema"),
++    "--local-secondary-indexes": ("LocalSecondaryIndexes", "json"),
++    "--on-demand-throughput": ("OnDemandThroughput", "kv"),
++    "--provisioned-throughput": ("ProvisionedThroughput", "kv"),
++    "--resource-policy": ("ResourcePolicy", "str"),
++    "--sse-specification": ("SSESpecification", "kv"),
++    "--stream-specification": ("StreamSpecification", "kv"),
++    "--table-class": ("TableClass", "str"),
++    "--table-name": ("TableName", "str"),
++    "--tags": ("Tags", "json"),
++    "--warm-throughput": ("WarmThroughput", "kv"),
++}
++
++DELETE_ITEM_FLAGS = {
++    "--condition-expression": ("ConditionExpression", "str"),
++    "--conditional-operator": ("ConditionalOperator", "str"),
++    "--expected": ("Expected", "json"),
++    "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++    "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++    "--key": ("Key", "json"),
++    "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++    "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++    "--return-values": ("ReturnValues", "str"),
++    "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++    "--table-name": ("TableName", "str"),
++}
++
++GET_ITEM_FLAGS = {
++    "--attributes-to-get": ("AttributesToGet", "list"),
++    "--consistent-read": ("ConsistentRead", "bool"),
++    "--no-consistent-read": ("ConsistentRead", "boolfalse"),
++    "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++    "--key": ("Key", "json"),
++    "--projection-expression": ("ProjectionExpression", "str"),
++    "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++    "--table-name": ("TableName", "str"),
++}
++
++LIST_TABLES_FLAGS = {
++    "--exclusive-start-table-name": ("ExclusiveStartTableName", "str"),
++    "--limit": ("Limit", "int"),
++}
++
++QUERY_FLAGS = {
++    "--attributes-to-get": ("AttributesToGet", "list"),
++    "--conditional-operator": ("ConditionalOperator", "str"),
++    "--consistent-read": ("ConsistentRead", "bool"),
++    "--no-consistent-read": ("ConsistentRead", "boolfalse"),
++    "--exclusive-start-key": ("ExclusiveStartKey", "json"),
++    "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++    "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++    "--filter-expression": ("FilterExpression", "str"),
++    "--index-name": ("IndexName", "str"),
++    "--key-condition-expression": ("KeyConditionExpression", "str"),
++    "--key-conditions": ("KeyConditions", "json"),
++    "--limit": ("Limit", "int"),
++    "--projection-expression": ("ProjectionExpression", "str"),
++    "--query-filter": ("QueryFilter", "json"),
++    "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++    "--scan-index-forward": ("ScanIndexForward", "bool"),
++    "--no-scan-index-forward": ("ScanIndexForward", "boolfalse"),
++    "--select": ("Select", "str"),
++    "--table-name": ("TableName", "str"),
++}
++
++UPDATE_ITEM_FLAGS = {
++    "--attribute-updates": ("AttributeUpdates", "json"),
++    "--condition-expression": ("ConditionExpression", "str"),
++    "--conditional-operator": ("ConditionalOperator", "str"),
++    "--expected": ("Expected", "json"),
++    "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++    "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++    "--key": ("Key", "json"),
++    "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++    "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++    "--return-values": ("ReturnValues", "str"),
++    "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++    "--table-name": ("TableName", "str"),
++    "--update-expression": ("UpdateExpression", "str"),
++}
++
++SUBCOMMANDS = {
++    "create-table": ("CreateTable", CREATE_TABLE_FLAGS),
++    "delete-item": ("DeleteItem", DELETE_ITEM_FLAGS),
++    "get-item": ("GetItem", GET_ITEM_FLAGS),
++    "list-tables": ("ListTables", LIST_TABLES_FLAGS),
++    "query": ("Query", QUERY_FLAGS),
++    "update-item": ("UpdateItem", UPDATE_ITEM_FLAGS),
++}
++
++
++class UsageError(Exception):
++    pass
++
++
++def usage_error(msg):
++    sys.stderr.write("usage error: " + msg + "\n")
++    sys.exit(252)
++
++
++def get_endpoint():
++    ep = os.environ.get("AWS_ENDPOINT_URL_DYNAMODB") or os.environ.get("AWS_ENDPOINT_URL")
++    if not ep:
++        usage_error("no endpoint configured")
++    return ep
++
++
++def call(op, payload):
++    endpoint = get_endpoint()
++    data = json.dumps(payload).encode("utf-8")
++    req = urllib.request.Request(endpoint, data=data, method="POST")
++    req.add_header("Content-Type", "application/x-amz-json-1.0")
++    req.add_header("X-Amz-Target", TARGET_PREFIX + op)
++    req.add_header("Authorization",
++                   "AWS4-HMAC-SHA256 Credential=dummy/20250101/us-east-1/dynamodb/aws4_request, "
++                   "SignedHeaders=host;x-amz-date;x-amz-target, Signature=dummy")
++    req.add_header("X-Amz-Date", "20250101T000000Z")
++    try:
++        resp = urllib.request.urlopen(req)
++        body = resp.read().decode("utf-8")
++        if body:
++            return json.loads(body)
++        return {}
++    except urllib.error.HTTPError as e:
++        body = e.read().decode("utf-8")
++        code = "UnknownError"
++        message = body
++        try:
++            j = json.loads(body)
++            t = j.get("__type", "")
++            if "#" in t:
++                code = t.split("#", 1)[1]
++            elif t:
++                code = t
++            message = j.get("message", j.get("Message", ""))
++        except Exception:
++            pass
++        sys.stderr.write("An error occurred (" + code + "): " + str(message) + "\n")
++        sys.exit(254)
++    except urllib.error.URLError as e:
++        sys.stderr.write("Connection error: " + str(e) + "\n")
++        sys.exit(254)
++
++
++def parse_json(val):
++    try:
++        return json.loads(val)
++    except Exception:
++        raise UsageError("Invalid JSON: " + val)
++
++
++def parse_kv_struct(val):
++    # ReadCapacityUnits=5,WriteCapacityUnits=5 -> {"ReadCapacityUnits":5,"WriteCapacityUnits":5}
++    if val.strip().startswith("{"):
++        return parse_json(val)
++    out = {}
++    for pair in val.split(","):
++        pair = pair.strip()
++        if not pair:
++            continue
++        if "=" not in pair:
++            raise UsageError("Invalid key=value: " + pair)
++        k, v = pair.split("=", 1)
++        k = k.strip()
++        v = v.strip()
++        if v.lstrip("-").isdigit():
++            out[k] = int(v)
++        elif v.lower() in ("true", "false"):
++            out[k] = v.lower() == "true"
++        else:
++            out[k] = v
++    return out
++
++
++def parse_attrdefs(values):
++    # list of AttributeName=pk,AttributeType=S
++    if len(values) == 1 and values[0].strip().startswith("["):
++        return parse_json(values[0])
++    out = []
++    for v in values:
++        d = {}
++        for pair in v.split(","):
++            pair = pair.strip()
++            if not pair:
++                continue
++            if "=" not in pair:
++                raise UsageError("Invalid key=value: " + pair)
++            k, val = pair.split("=", 1)
++            d[k.strip()] = val.strip()
++        out.append(d)
++    return out
++
++
++def parse_keyschema(values):
++    if len(values) == 1 and values[0].strip().startswith("["):
++        return parse_json(values[0])
++    out = []
++    for v in values:
++        d = {}
++        for pair in v.split(","):
++            pair = pair.strip()
++            if not pair:
++                continue
++            if "=" not in pair:
++                raise UsageError("Invalid key=value: " + pair)
++            k, val = pair.split("=", 1)
++            d[k.strip()] = val.strip()
++        out.append(d)
++    return out
++
++
++def build_request(flags_spec, args):
++    payload = {}
++    i = 0
++    n = len(args)
++    # We need to consume multi-value flags for attribute-definitions/key-schema/attributes-to-get.
++    multi_kinds = ("attrdefs", "keyschema", "list")
++    while i < n:
++        tok = args[i]
++        if not tok.startswith("--"):
++            raise UsageError("Unexpected argument: " + tok)
++        if tok not in flags_spec:
++            raise UsageError("Unknown option: " + tok)
++        field, kind = flags_spec[tok]
++        if kind == "bool":
++            payload[field] = True
++            i += 1
++            continue
++        if kind == "boolfalse":
++            payload[field] = False
++            i += 1
++            continue
++        # gather values
++        vals = []
++        i += 1
++        while i < n and not args[i].startswith("--"):
++            vals.append(args[i])
++            i += 1
++            if kind not in multi_kinds:
++                break
++        if not vals:
++            raise UsageError("Missing value for " + tok)
++        if kind == "str":
++            if vals[0] == "":
++                raise UsageError("Empty value for " + tok)
++            payload[field] = vals[0]
++        elif kind == "int":
++            try:
++                payload[field] = int(vals[0])
++            except Exception:
++                raise UsageError("Invalid integer for " + tok)
++        elif kind == "json":
++            payload[field] = parse_json(vals[0])
++        elif kind == "kv":
++            payload[field] = parse_kv_struct(vals[0])
++        elif kind == "attrdefs":
++            payload[field] = parse_attrdefs(vals)
++        elif kind == "keyschema":
++            payload[field] = parse_keyschema(vals)
++        elif kind == "list":
++            payload[field] = vals
++        else:
++            payload[field] = vals[0]
++    return payload
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3:
++        usage_error("missing command")
++    prefix = argv[1]
++    sub = argv[2]
++    if sub not in SUBCOMMANDS:
++        usage_error("unknown subcommand: " + str(sub))
++    op, spec = SUBCOMMANDS[sub]
++    args = argv[3:]
++    try:
++        payload = build_request(spec, args)
++    except UsageError as e:
++        usage_error(str(e))
++        return
++
++    # Validate required fields client-side minimally where upstream also does argparse-level.
++    # TableName is required for all except list-tables (handled by server otherwise).
++    if sub in ("delete-item", "get-item", "update-item"):
++        if "TableName" not in payload:
++            usage_error("The following arguments are required: --table-name")
++        if "Key" not in payload:
++            usage_error("The following arguments are required: --key")
++    if sub == "query":
++        if "TableName" not in payload:
++            usage_error("The following arguments are required: --table-name")
++
++    if sub == "create-table":
++        result = call(op, payload)
++        sys.stdout.write(json.dumps(result, indent=4) + "\n")
++        # Follow-up DescribeTable when full definitions were provided.
++        if "AttributeDefinitions" in payload and "KeySchema" in payload and payload.get("TableName"):
++            desc = call("DescribeTable", {"TableName": payload["TableName"]})
++            sys.stdout.write(json.dumps(desc, indent=4) + "\n")
++        sys.exit(0)
++    else:
++        result = call(op, payload)
++        sys.stdout.write(json.dumps(result, indent=4) + "\n")
++        sys.exit(0)
++
++
++if __name__ == "__main__":
++    main()

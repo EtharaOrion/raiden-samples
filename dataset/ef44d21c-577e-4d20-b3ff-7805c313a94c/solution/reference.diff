@@ -1,0 +1,1036 @@
+diff --git a/submission/aws b/submission/aws
+new file mode 100755
+index 0000000..b406dbe
+--- /dev/null
++++ b/submission/aws
+@@ -0,0 +1,1030 @@
++#!/usr/bin/env python3
++import sys
++import os
++import hashlib
++import hmac
++import datetime
++import urllib.parse
++import http.client
++import xml.etree.ElementTree as ET
++
++S3_NS = 'http://s3.amazonaws.com/doc/2006-03-01/'
++EMPTY_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
++MULTIPART_THRESHOLD = 8 * 1024 * 1024
++
++
++class ClientError(Exception):
++    def __init__(self, code, message, status):
++        self.code = code
++        self.message = message
++        self.status = status
++        super().__init__(message)
++
++    def __str__(self):
++        return 'An error occurred (%s) when calling the operation: %s' % (
++            self.code, self.message)
++
++
++def get_config():
++    ak = os.environ.get('AWS_ACCESS_KEY_ID', '')
++    sk = os.environ.get('AWS_SECRET_ACCESS_KEY', '')
++    st = os.environ.get('AWS_SESSION_TOKEN')
++    region = os.environ.get('AWS_REGION') or os.environ.get(
++        'AWS_DEFAULT_REGION') or 'us-east-1'
++    endpoint = os.environ.get('AWS_ENDPOINT_URL_S3') or os.environ.get(
++        'AWS_ENDPOINT_URL') or 'https://s3.%s.amazonaws.com' % region
++    return ak, sk, st, region, endpoint
++
++
++def uri_encode(s, encode_slash=True):
++    safe = '-._~'
++    if not encode_slash:
++        safe += '/'
++    return urllib.parse.quote(s, safe=safe)
++
++
++def sign_and_send(method, bucket, key=None, query=None, body=b'', headers=None):
++    ak, sk, st, region, endpoint = get_config()
++    if headers is None:
++        headers = {}
++    if query is None:
++        query = {}
++    if body is None:
++        body = b''
++
++    parsed = urllib.parse.urlsplit(endpoint)
++    scheme = parsed.scheme or 'https'
++    host = parsed.netloc
++
++    base_path = parsed.path.rstrip('/')
++    path = base_path + '/' + bucket
++    if key:
++        path += '/' + key
++    canonical_uri = uri_encode(path, encode_slash=False)
++    if not canonical_uri.startswith('/'):
++        canonical_uri = '/' + canonical_uri
++
++    now = datetime.datetime.now(datetime.timezone.utc)
++    amzdate = now.strftime('%Y%m%dT%H%M%SZ')
++    datestamp = now.strftime('%Y%m%d')
++
++    payload_hash = EMPTY_SHA256 if not body else hashlib.sha256(body).hexdigest()
++
++    hdrs = {}
++    for k, v in headers.items():
++        hdrs[k] = v
++    hdrs['host'] = host
++    hdrs['x-amz-content-sha256'] = payload_hash
++    hdrs['x-amz-date'] = amzdate
++    if st:
++        hdrs['x-amz-security-token'] = st
++
++    canonical_query = ''
++    if query:
++        items = []
++        for qk in sorted(query.keys()):
++            qv = query[qk]
++            if qv is None:
++                qv = ''
++            items.append((uri_encode(qk), uri_encode(str(qv))))
++        canonical_query = '&'.join('%s=%s' % (a, b) for a, b in items)
++
++    sorted_hdr_keys = sorted(hdrs.keys(), key=lambda x: x.lower())
++    canonical_headers = ''
++    for hk in sorted_hdr_keys:
++        canonical_headers += hk.lower() + ':' + str(hdrs[hk]).strip() + '\n'
++    signed_headers = ';'.join(k.lower() for k in sorted_hdr_keys)
++
++    canonical_request = '\n'.join([
++        method, canonical_uri, canonical_query, canonical_headers,
++        signed_headers, payload_hash])
++
++    scope = '%s/%s/s3/aws4_request' % (datestamp, region)
++    string_to_sign = '\n'.join([
++        'AWS4-HMAC-SHA256', amzdate, scope,
++        hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()])
++
++    def hmac_sha(key, msg):
++        return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).digest()
++
++    kdate = hmac_sha(('AWS4' + sk).encode('utf-8'), datestamp)
++    kregion = hmac.new(kdate, region.encode('utf-8'), hashlib.sha256).digest()
++    kservice = hmac.new(kregion, b's3', hashlib.sha256).digest()
++    ksigning = hmac.new(kservice, b'aws4_request', hashlib.sha256).digest()
++    signature = hmac.new(ksigning, string_to_sign.encode('utf-8'),
++                         hashlib.sha256).hexdigest()
++
++    authorization = (
++        'AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s' %
++        (ak, scope, signed_headers, signature))
++    hdrs['Authorization'] = authorization
++
++    url_path = canonical_uri
++    if canonical_query:
++        url_path += '?' + canonical_query
++
++    if scheme == 'https':
++        conn = http.client.HTTPSConnection(host, timeout=60)
++    else:
++        conn = http.client.HTTPConnection(host, timeout=60)
++
++    try:
++        conn.request(method, url_path, body=body, headers=hdrs)
++        resp = conn.getresponse()
++        data = resp.read()
++        status = resp.status
++        resp_headers = dict(resp.getheaders())
++    except Exception as e:
++        conn.close()
++        raise ClientError('EndpointConnectionError', str(e), 0)
++    finally:
++        try:
++            conn.close()
++        except Exception:
++            pass
++
++    if status < 200 or status >= 300:
++        code = 'Unknown'
++        message = 'Unknown error'
++        if data:
++            try:
++                root = ET.fromstring(data)
++                c = root.find('.//Code')
++                m = root.find('.//Message')
++                if c is not None and c.text:
++                    code = c.text
++                if m is not None and m.text:
++                    message = m.text
++            except Exception:
++                pass
++        if code == 'Unknown':
++            if status == 404:
++                code = 'NoSuchKey'
++                message = 'The specified key does not exist.'
++            elif status == 403:
++                code = 'AccessDenied'
++                message = 'Access Denied'
++        raise ClientError(code, message, status)
++
++    return status, data, resp_headers
++
++
++def strip_ns(tag):
++    if '}' in tag:
++        return tag.split('}', 1)[1]
++    return tag
++
++
++def find_bucket_key(path):
++    if path.startswith('s3://'):
++        path = path[5:]
++    parts = path.split('/', 1)
++    bucket = parts[0]
++    key = parts[1] if len(parts) > 1 else ''
++    return bucket, key
++
++
++def split_s3_bucket_key(path):
++    if path.startswith('s3://'):
++        p = path[5:]
++    else:
++        p = path
++    return find_bucket_key(p)
++
++
++def is_s3express_bucket(bucket):
++    return bucket.endswith('--x-s3')
++
++
++# ---------------- S3 operations ----------------
++
++def create_bucket(bucket, region):
++    body = b''
++    headers = {}
++    if region != 'us-east-1':
++        body = (
++            '<CreateBucketConfiguration xmlns="%s">'
++            '<LocationConstraint>%s</LocationConstraint>'
++            '</CreateBucketConfiguration>' % (S3_NS, region)).encode('utf-8')
++        headers['Content-Type'] = 'application/xml'
++    sign_and_send('PUT', bucket, body=body, headers=headers)
++
++
++def _header_get(headers, name):
++    for k, v in headers.items():
++        if k.lower() == name.lower():
++            return v
++    return None
++
++
++def put_object(bucket, key, body, extra_headers=None):
++    headers = {'Content-Length': str(len(body))}
++    if extra_headers:
++        headers.update(extra_headers)
++    sign_and_send('PUT', bucket, key, body=body, headers=headers)
++
++
++def copy_object(src_bucket, src_key, dst_bucket, dst_key, directive=None,
++                extra_headers=None):
++    copy_source = '/%s/%s' % (src_bucket, uri_encode(src_key,
++                                                      encode_slash=False))
++    headers = {
++        'x-amz-copy-source': copy_source,
++        'Content-Length': '0',
++    }
++    if directive:
++        headers['x-amz-metadata-directive'] = directive
++    if extra_headers:
++        headers.update(extra_headers)
++    sign_and_send('PUT', dst_bucket, dst_key, body=b'', headers=headers)
++
++
++def multipart_upload(bucket, key, data, extra_headers=None):
++    init_headers = {'Content-Length': '0'}
++    if extra_headers:
++        init_headers.update(extra_headers)
++    status, body, _ = sign_and_send('POST', bucket, key, query={'uploads': ''},
++                                    body=b'', headers=init_headers)
++    root = ET.fromstring(body)
++    upload_id = None
++    for c in root.iter():
++        if strip_ns(c.tag) == 'UploadId':
++            upload_id = c.text
++            break
++    if not upload_id:
++        raise ClientError('InvalidRequest', 'no UploadId returned', status)
++
++    parts = []
++    chunk = MULTIPART_THRESHOLD
++    part_number = 1
++    offset = 0
++    total = len(data)
++    while offset < total:
++        piece = data[offset:offset + chunk]
++        offset += chunk
++        phdrs = {'Content-Length': str(len(piece))}
++        _, _, rh = sign_and_send('PUT', bucket, key,
++                                 query={'partNumber': str(part_number),
++                                        'uploadId': upload_id},
++                                 body=piece, headers=phdrs)
++        etag = _header_get(rh, 'ETag')
++        parts.append((part_number, etag))
++        part_number += 1
++
++    xml_parts = ''.join(
++        '<Part><PartNumber>%d</PartNumber><ETag>%s</ETag></Part>' % (n, e)
++        for n, e in parts)
++    complete_body = (
++        '<CompleteMultipartUpload>%s</CompleteMultipartUpload>' % xml_parts
++    ).encode('utf-8')
++    chdrs = {'Content-Length': str(len(complete_body)),
++             'Content-Type': 'application/xml'}
++    sign_and_send('POST', bucket, key, query={'uploadId': upload_id},
++                  body=complete_body, headers=chdrs)
++
++
++def build_put_headers(opts):
++    """Map cp option dict -> S3 PUT/Copy headers."""
++    h = {}
++    if opts.get('content_type'):
++        h['Content-Type'] = opts['content_type']
++    if opts.get('cache_control'):
++        h['Cache-Control'] = opts['cache_control']
++    if opts.get('content_disposition'):
++        h['Content-Disposition'] = opts['content_disposition']
++    if opts.get('content_encoding'):
++        h['Content-Encoding'] = opts['content_encoding']
++    if opts.get('content_language'):
++        h['Content-Language'] = opts['content_language']
++    if opts.get('storage_class'):
++        h['x-amz-storage-class'] = opts['storage_class']
++    if opts.get('sse'):
++        h['x-amz-server-side-encryption'] = opts['sse']
++    if opts.get('sse_kms_key_id'):
++        h['x-amz-server-side-encryption-aws-kms-key-id'] = opts['sse_kms_key_id']
++    if opts.get('website_redirect'):
++        h['x-amz-website-redirect-location'] = opts['website_redirect']
++    if opts.get('request_payer'):
++        h['x-amz-request-payer'] = opts['request_payer']
++    if opts.get('acl'):
++        h['x-amz-acl'] = opts['acl']
++    meta = opts.get('metadata')
++    if meta:
++        for mk, mv in meta.items():
++            h['x-amz-meta-%s' % mk] = mv
++    return h
++
++
++def get_object(bucket, key):
++    status, data, _ = sign_and_send('GET', bucket, key)
++    return data
++
++
++def delete_object(bucket, key):
++    sign_and_send('DELETE', bucket, key)
++
++
++def list_buckets():
++    status, data, _ = sign_and_send('GET', '')
++    result = []
++    root = ET.fromstring(data)
++    for b in root.iter():
++        if strip_ns(b.tag) == 'Bucket':
++            name = None
++            cd = None
++            for c in b:
++                t = strip_ns(c.tag)
++                if t == 'Name':
++                    name = c.text
++                elif t == 'CreationDate':
++                    cd = c.text
++            if name:
++                result.append((name, cd))
++    return result
++
++
++def list_objects_v2(bucket, prefix, delimiter=None, page_size=None):
++    contents = []
++    prefixes = []
++    token = None
++    while True:
++        query = {'list-type': '2'}
++        if prefix:
++            query['prefix'] = prefix
++        if delimiter:
++            query['delimiter'] = delimiter
++        if page_size:
++            query['max-keys'] = str(page_size)
++        if token:
++            query['continuation-token'] = token
++        status, data, _ = sign_and_send('GET', bucket, query=query)
++        root = ET.fromstring(data)
++        is_trunc = False
++        next_token = None
++        for child in root:
++            t = strip_ns(child.tag)
++            if t == 'Contents':
++                k = size = lm = None
++                for c in child:
++                    ct = strip_ns(c.tag)
++                    if ct == 'Key':
++                        k = c.text
++                    elif ct == 'Size':
++                        size = c.text
++                    elif ct == 'LastModified':
++                        lm = c.text
++                contents.append((k, size, lm))
++            elif t == 'CommonPrefixes':
++                for c in child:
++                    if strip_ns(c.tag) == 'Prefix':
++                        prefixes.append(c.text)
++            elif t == 'IsTruncated':
++                is_trunc = (child.text == 'true')
++            elif t == 'NextContinuationToken':
++                next_token = child.text
++        if is_trunc and next_token:
++            token = next_token
++        else:
++            break
++    return contents, prefixes
++
++
++# ---------------- ls formatting ----------------
++
++def _utcnow_naive():
++    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
++
++
++def parse_iso(dt):
++    if not dt:
++        return _utcnow_naive()
++    for fmt in ('%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ',
++                '%Y-%m-%dT%H:%M:%S.%f%z', '%Y-%m-%dT%H:%M:%S%z'):
++        try:
++            d = datetime.datetime.strptime(dt, fmt)
++            if d.tzinfo is not None:
++                d = d.astimezone(datetime.timezone.utc).replace(tzinfo=None)
++            return d
++        except Exception:
++            continue
++    return _utcnow_naive()
++
++
++def make_last_mod_str(dt):
++    d = parse_iso(dt)
++    return d.strftime('%Y-%m-%d %H:%M:%S')
++
++
++# ---------------- Command handlers ----------------
++
++def err_exit(msg, code):
++    sys.stderr.write(msg)
++    if not msg.endswith('\n'):
++        sys.stderr.write('\n')
++    sys.exit(code)
++
++
++def cmd_mb(args):
++    path = None
++    region = None
++    i = 0
++    while i < len(args):
++        a = args[i]
++        if a == '--region':
++            i += 1
++            if i < len(args):
++                region = args[i]
++        elif a.startswith('--region='):
++            region = a.split('=', 1)[1]
++        elif a == '--output' or a == '--endpoint-url' or a == '--profile':
++            i += 1
++        elif a.startswith('--'):
++            err_exit('\nUnknown options: %s' % a, 252)
++        else:
++            if path is None:
++                path = a
++        i += 1
++
++    if path is None:
++        err_exit('usage: aws s3 mb <S3Uri>', 252)
++
++    if not path.startswith('s3://'):
++        err_exit('\nError: Invalid argument type', 252)
++
++    bucket, key = split_s3_bucket_key(path)
++
++    if is_s3express_bucket(bucket):
++        err_exit('Cannot use mb command with a directory bucket.', 252)
++
++    _, _, _, cfg_region, _ = get_config()
++    use_region = region if region else cfg_region
++
++    try:
++        create_bucket(bucket, use_region)
++        sys.stdout.write('make_bucket: %s\n' % bucket)
++        return 0
++    except ClientError as e:
++        sys.stderr.write('make_bucket failed: %s %s\n' % (path, str(e)))
++        return 1
++
++
++def cmd_ls(args):
++    path = None
++    recursive = False
++    human = False
++    summarize = False
++    page_size = None
++    i = 0
++    while i < len(args):
++        a = args[i]
++        if a == '--recursive':
++            recursive = True
++        elif a == '--human-readable':
++            human = True
++        elif a == '--summarize':
++            summarize = True
++        elif a == '--page-size':
++            i += 1
++            if i < len(args):
++                try:
++                    page_size = int(args[i])
++                except ValueError:
++                    err_exit('\nParameter validation failed:\nInvalid type '
++                             'for parameter PageSize', 252)
++        elif a.startswith('--page-size='):
++            try:
++                page_size = int(a.split('=', 1)[1])
++            except ValueError:
++                err_exit('\nParameter validation failed:\nInvalid type '
++                         'for parameter PageSize', 252)
++        elif a in ('--request-payer', '--endpoint-url', '--profile',
++                   '--output', '--region'):
++            i += 1
++        elif a.startswith('--'):
++            err_exit('\nUnknown options: %s' % a, 252)
++        else:
++            if path is None:
++                path = a
++        i += 1
++
++    if path is None:
++        path = ''
++
++    if path.startswith('s3://'):
++        path = path[5:]
++
++    bucket, key = find_bucket_key(path)
++
++    try:
++        if not bucket:
++            buckets = list_buckets()
++            for name, cd in buckets:
++                sys.stdout.write('%s %s\n' % (make_last_mod_str(cd), name))
++            return 0
++        elif recursive:
++            contents, prefixes = list_objects_v2(bucket, key, delimiter=None,
++                                                 page_size=page_size)
++            matched = False
++            for k, size, lm in contents:
++                matched = True
++                sys.stdout.write('%s %10d %s\n' % (
++                    make_last_mod_str(lm), int(size or 0), k))
++            if key:
++                return 0 if matched else 1
++            return 0
++        else:
++            contents, prefixes = list_objects_v2(bucket, key, delimiter='/',
++                                                  page_size=page_size)
++            matched = False
++            for p in prefixes:
++                matched = True
++                disp = p
++                if key and disp.startswith(key):
++                    disp = disp[len(key):]
++                sys.stdout.write('%s %s %s\n' % (' ' * 27, 'PRE', disp))
++            for k, size, lm in contents:
++                matched = True
++                disp = k
++                if key and disp.startswith(key):
++                    tail = disp[len(key):]
++                    idx = key.rfind('/')
++                    if idx >= 0:
++                        disp = k[idx + 1:]
++                    else:
++                        disp = k
++                else:
++                    idx = k.rfind('/')
++                    if idx >= 0:
++                        disp = k[idx + 1:]
++                sys.stdout.write('%s %10d %s\n' % (
++                    make_last_mod_str(lm), int(size or 0), disp))
++            if key:
++                return 0 if matched else 1
++            return 0
++    except ClientError as e:
++        sys.stderr.write('%s\n' % str(e))
++        return 1
++
++
++def is_s3_uri(s):
++    return s.startswith('s3://')
++
++
++CP_VALUE_FLAGS = {
++    '--sse-kms-key-id': 'sse_kms_key_id',
++    '--storage-class': 'storage_class',
++    '--content-type': 'content_type',
++    '--cache-control': 'cache_control',
++    '--content-disposition': 'content_disposition',
++    '--content-encoding': 'content_encoding',
++    '--content-language': 'content_language',
++    '--metadata-directive': 'metadata_directive',
++    '--website-redirect': 'website_redirect',
++    '--acl': 'acl',
++    '--expected-size': 'expected_size',
++    '--expires': 'expires',
++    '--endpoint-url': 'endpoint_url',
++    '--profile': 'profile',
++    '--region': 'region',
++    '--output': 'output',
++}
++CP_BOOL_FLAGS = {
++    '--dryrun', '--recursive', '--follow-symlinks', '--no-follow-symlinks',
++    '--only-show-errors', '--quiet', '--no-progress', '--no-guess-mime-type',
++}
++
++
++def parse_transfer_args(args, cmd_name):
++    """Shared parser for cp/sync-style commands. Returns (positional, opts)."""
++    positional = []
++    opts = {}
++    i = 0
++    while i < len(args):
++        a = args[i]
++        if a in CP_BOOL_FLAGS:
++            opts[a.lstrip('-').replace('-', '_')] = True
++        elif a == '--sse':
++            val = 'AES256'
++            if i + 1 < len(args) and not args[i + 1].startswith('--'):
++                i += 1
++                val = args[i]
++            opts['sse'] = val
++        elif a == '--request-payer':
++            val = 'requester'
++            if i + 1 < len(args) and not args[i + 1].startswith('--'):
++                i += 1
++                val = args[i]
++            opts['request_payer'] = val
++        elif a == '--metadata':
++            i += 1
++            if i < len(args):
++                meta = {}
++                for pair in args[i].split(','):
++                    if '=' in pair:
++                        mk, mv = pair.split('=', 1)
++                        meta[mk] = mv
++                opts['metadata'] = meta
++        elif a.startswith('--metadata='):
++            meta = {}
++            for pair in a.split('=', 1)[1].split(','):
++                if '=' in pair:
++                    mk, mv = pair.split('=', 1)
++                    meta[mk] = mv
++            opts['metadata'] = meta
++        elif a in CP_VALUE_FLAGS:
++            i += 1
++            if i < len(args):
++                opts[CP_VALUE_FLAGS[a]] = args[i]
++        elif a.startswith('--') and '=' in a and a.split('=', 1)[0] in CP_VALUE_FLAGS:
++            fk, fv = a.split('=', 1)
++            opts[CP_VALUE_FLAGS[fk]] = fv
++        elif a.startswith('--'):
++            err_exit('\nUnknown options: %s' % a, 252)
++        else:
++            positional.append(a)
++        i += 1
++    return positional, opts
++
++
++def cmd_cp(args):
++    positional, opts = parse_transfer_args(args, 'cp')
++    dryrun = opts.get('dryrun', False)
++    recursive = opts.get('recursive', False)
++
++    if len(positional) < 2:
++        err_exit('usage: aws s3 cp <LocalPath> <S3Uri> or <S3Uri> <LocalPath> '
++                 'or <S3Uri> <S3Uri>\nError: Invalid argument type', 252)
++
++    src, dest = positional[0], positional[1]
++
++    src_is_s3 = is_s3_uri(src)
++    dest_is_s3 = is_s3_uri(dest)
++    put_headers = build_put_headers(opts)
++
++    # stream cases
++    if src == '-' and dest_is_s3:
++        b, k = find_bucket_key(dest)
++        if not k or dest.endswith('/'):
++            err_exit('upload failed: %s Invalid key' % dest, 2)
++        data = sys.stdin.buffer.read()
++        if dryrun:
++            sys.stdout.write('(dryrun) upload: - to s3://%s/%s\n' % (b, k))
++            return 0
++        try:
++            if len(data) >= MULTIPART_THRESHOLD:
++                multipart_upload(b, k, data, extra_headers=put_headers)
++            else:
++                put_object(b, k, data, extra_headers=put_headers)
++            return 0
++        except ClientError as e:
++            sys.stderr.write('upload failed: - to s3://%s/%s %s\n' % (
++                b, k, str(e)))
++            return 1
++
++    if dest == '-' and src_is_s3:
++        b, k = find_bucket_key(src)
++        if dryrun:
++            return 0
++        try:
++            data = get_object(b, k)
++            sys.stdout.buffer.write(data)
++            return 0
++        except ClientError as e:
++            sys.stderr.write('download failed: s3://%s/%s to - %s\n' % (
++                b, k, str(e)))
++            return 1
++
++    if not src_is_s3 and dest_is_s3:
++        # upload
++        b, k = find_bucket_key(dest)
++        if not k or dest.endswith('/'):
++            base = os.path.basename(src)
++            k = (k + base) if k else base
++        if dryrun:
++            sys.stdout.write('(dryrun) upload: %s to s3://%s/%s\n' % (src, b, k))
++            return 0
++        if not os.path.isfile(src):
++            sys.stderr.write(
++                'upload failed: %s to s3://%s/%s The user-provided path %s '
++                'does not exist.\n' % (src, b, k, src))
++            return 1
++        try:
++            with open(src, 'rb') as f:
++                data = f.read()
++            if len(data) >= MULTIPART_THRESHOLD:
++                multipart_upload(b, k, data, extra_headers=put_headers)
++            else:
++                put_object(b, k, data, extra_headers=put_headers)
++            sys.stdout.write('upload: %s to s3://%s/%s\n' % (src, b, k))
++            return 0
++        except ClientError as e:
++            sys.stderr.write('upload failed: %s to s3://%s/%s %s\n' % (
++                src, b, k, str(e)))
++            return 1
++
++    if src_is_s3 and not dest_is_s3:
++        b, k = find_bucket_key(src)
++        outpath = dest
++        if os.path.isdir(dest) or dest.endswith('/'):
++            outpath = os.path.join(dest, os.path.basename(k))
++        if dryrun:
++            sys.stdout.write('(dryrun) download: s3://%s/%s to %s\n' % (
++                b, k, outpath))
++            return 0
++        try:
++            data = get_object(b, k)
++            with open(outpath, 'wb') as f:
++                f.write(data)
++            sys.stdout.write('download: s3://%s/%s to %s\n' % (b, k, outpath))
++            return 0
++        except ClientError as e:
++            sys.stderr.write('download failed: s3://%s/%s to %s %s\n' % (
++                b, k, outpath, str(e)))
++            return 1
++
++    if src_is_s3 and dest_is_s3:
++        sb, sk = find_bucket_key(src)
++        db, dk = find_bucket_key(dest)
++        if not dk or dest.endswith('/'):
++            dk = (dk + os.path.basename(sk)) if dk else os.path.basename(sk)
++        if dryrun:
++            sys.stdout.write('(dryrun) copy: s3://%s/%s to s3://%s/%s\n' % (
++                sb, sk, db, dk))
++            return 0
++        try:
++            directive = opts.get('metadata_directive')
++            if directive == 'REPLACE':
++                copy_object(sb, sk, db, dk, directive='REPLACE',
++                            extra_headers=put_headers)
++            else:
++                copy_object(sb, sk, db, dk)
++            sys.stdout.write('copy: s3://%s/%s to s3://%s/%s\n' % (
++                sb, sk, db, dk))
++            return 0
++        except ClientError as e:
++            sys.stderr.write('copy failed: s3://%s/%s to s3://%s/%s %s\n' % (
++                sb, sk, db, dk, str(e)))
++            return 1
++
++    err_exit('usage: aws s3 cp <LocalPath> <S3Uri>', 2)
++
++
++def cmd_rm(args):
++    positional = []
++    dryrun = False
++    recursive = False
++    i = 0
++    while i < len(args):
++        a = args[i]
++        if a == '--dryrun':
++            dryrun = True
++        elif a == '--recursive':
++            recursive = True
++        elif a == '--request-payer':
++            if i + 1 < len(args) and not args[i + 1].startswith('--'):
++                i += 1
++        elif a in ('--endpoint-url', '--profile', '--region', '--output',
++                   '--exclude', '--include'):
++            i += 1
++        elif a in ('--only-show-errors', '--quiet'):
++            pass
++        elif a.startswith('--'):
++            err_exit('\nUnknown options: %s' % a, 252)
++        else:
++            positional.append(a)
++        i += 1
++
++    if not positional:
++        err_exit('usage: aws s3 rm <S3Uri>\nError: Invalid argument type', 252)
++
++    path = positional[0]
++    if not is_s3_uri(path):
++        err_exit('usage: aws s3 rm <S3Uri>', 255)
++
++    b, k = find_bucket_key(path)
++
++    if recursive:
++        try:
++            contents, _ = list_objects_v2(b, k, delimiter=None)
++        except ClientError as e:
++            sys.stderr.write('%s\n' % str(e))
++            return 1
++        rc = 0
++        for key, size, lm in contents:
++            if dryrun:
++                sys.stdout.write('(dryrun) delete: s3://%s/%s\n' % (b, key))
++                continue
++            try:
++                delete_object(b, key)
++                sys.stdout.write('delete: s3://%s/%s\n' % (b, key))
++            except ClientError as e:
++                sys.stderr.write('delete failed: s3://%s/%s %s\n' % (
++                    b, key, str(e)))
++                rc = 1
++        return rc
++
++    if dryrun:
++        sys.stdout.write('(dryrun) delete: s3://%s/%s\n' % (b, k))
++        return 0
++    try:
++        delete_object(b, k)
++        sys.stdout.write('delete: s3://%s/%s\n' % (b, k))
++        return 0
++    except ClientError as e:
++        sys.stderr.write('delete failed: s3://%s/%s %s\n' % (b, k, str(e)))
++        return 1
++
++
++def cmd_sync(args):
++    positional, opts = parse_transfer_args(args, 'sync')
++    dryrun = opts.get('dryrun', False)
++    put_headers = build_put_headers(opts)
++
++    if len(positional) < 2:
++        err_exit('usage: aws s3 sync <LocalPath> <S3Uri> or <S3Uri> '
++                 '<LocalPath> or <S3Uri> <S3Uri>\n'
++                 'Error: Invalid argument type', 252)
++
++    src, dest = positional[0], positional[1]
++    src_is_s3 = is_s3_uri(src)
++    dest_is_s3 = is_s3_uri(dest)
++
++    if not src_is_s3 and dest_is_s3:
++        db, dk = find_bucket_key(dest)
++        # dest key is a prefix; normalize to end with '/' when non-empty.
++        prefix = dk
++        if prefix and not prefix.endswith('/'):
++            prefix += '/'
++        if not os.path.isdir(src):
++            err_exit('The user-provided path %s does not exist.' % src, 255)
++
++        try:
++            existing, _ = list_objects_v2(db, prefix, delimiter=None)
++        except ClientError as e:
++            sys.stderr.write('%s\n' % str(e))
++            return 255
++        existing_map = {}
++        for key, size, lm in existing:
++            existing_map[key] = (int(size or 0),
++                                 parse_iso(lm))
++
++        rc = 0
++        for root, dirs, files in os.walk(src):
++            for fn in files:
++                fp = os.path.join(root, fn)
++                rel = os.path.relpath(fp, src).replace(os.sep, '/')
++                remote_key = (prefix + rel) if prefix else rel
++                st = os.stat(fp)
++                lsize = st.st_size
++                lmtime = datetime.datetime.fromtimestamp(
++                    st.st_mtime, datetime.timezone.utc).replace(tzinfo=None)
++                need = True
++                if remote_key in existing_map:
++                    rsize, rmtime = existing_map[remote_key]
++                    if rsize == lsize and rmtime >= lmtime:
++                        need = False
++                if not need:
++                    continue
++                if dryrun:
++                    sys.stdout.write(
++                        '(dryrun) upload: %s to s3://%s/%s\n' % (
++                            fp, db, remote_key))
++                    continue
++                try:
++                    with open(fp, 'rb') as f:
++                        data = f.read()
++                    put_object(db, remote_key, data)
++                    sys.stdout.write('upload: %s to s3://%s/%s\n' % (
++                        fp, db, remote_key))
++                except ClientError as e:
++                    sys.stderr.write('upload failed: %s to s3://%s/%s %s\n' % (
++                        fp, db, remote_key, str(e)))
++                    rc = 1
++        return rc
++
++    if src_is_s3 and not dest_is_s3:
++        sb, sk = find_bucket_key(src)
++        try:
++            contents, _ = list_objects_v2(sb, sk, delimiter=None)
++        except ClientError as e:
++            sys.stderr.write('%s\n' % str(e))
++            return 1
++        if not os.path.isdir(dest) and not dryrun:
++            try:
++                os.makedirs(dest, exist_ok=True)
++            except Exception:
++                pass
++        rc = 0
++        for key, size, lm in contents:
++            rel = key[len(sk):] if sk and key.startswith(sk) else key
++            rel = rel.lstrip('/')
++            outpath = os.path.join(dest, rel)
++            lsize = int(size or 0)
++            lmtime = parse_iso(lm)
++            need = True
++            if os.path.isfile(outpath):
++                st = os.stat(outpath)
++                local_mtime = datetime.datetime.fromtimestamp(
++                    st.st_mtime, datetime.timezone.utc).replace(tzinfo=None)
++                if st.st_size == lsize and local_mtime >= lmtime:
++                    need = False
++            if not need:
++                continue
++            if dryrun:
++                sys.stdout.write('(dryrun) download: s3://%s/%s to %s\n' % (
++                    sb, key, outpath))
++                continue
++            try:
++                data = get_object(sb, key)
++                d = os.path.dirname(outpath)
++                if d:
++                    os.makedirs(d, exist_ok=True)
++                with open(outpath, 'wb') as f:
++                    f.write(data)
++                sys.stdout.write('download: s3://%s/%s to %s\n' % (
++                    sb, key, outpath))
++            except ClientError as e:
++                sys.stderr.write('download failed: s3://%s/%s to %s %s\n' % (
++                    sb, key, outpath, str(e)))
++                rc = 1
++        return rc
++
++    if src_is_s3 and dest_is_s3:
++        sb, sk = find_bucket_key(src)
++        db, dk = find_bucket_key(dest)
++        try:
++            contents, _ = list_objects_v2(sb, sk, delimiter=None)
++            existing, _ = list_objects_v2(db, dk, delimiter=None)
++        except ClientError as e:
++            sys.stderr.write('%s\n' % str(e))
++            return 1
++        existing_map = {}
++        for key, size, lm in existing:
++            existing_map[key] = int(size or 0)
++        rc = 0
++        for key, size, lm in contents:
++            rel = key[len(sk):] if sk and key.startswith(sk) else key
++            rel = rel.lstrip('/')
++            dkey = (dk + rel) if dk else rel
++            if dryrun:
++                sys.stdout.write('(dryrun) copy: s3://%s/%s to s3://%s/%s\n' % (
++                    sb, key, db, dkey))
++                continue
++            try:
++                data = get_object(sb, key)
++                put_object(db, dkey, data)
++                sys.stdout.write('copy: s3://%s/%s to s3://%s/%s\n' % (
++                    sb, key, db, dkey))
++            except ClientError as e:
++                sys.stderr.write('copy failed: s3://%s/%s to s3://%s/%s %s\n' % (
++                    sb, key, db, dkey, str(e)))
++                rc = 1
++        return rc
++
++    err_exit('usage: aws s3 sync <LocalPath> <S3Uri>', 252)
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 2:
++        err_exit('usage: aws <command> <subcommand> [parameters]', 2)
++
++    if argv[1] != 's3':
++        err_exit("aws: error: argument command: Invalid choice: '%s'" % argv[1],
++                 2)
++
++    if len(argv) < 3:
++        err_exit('usage: aws s3 <subcommand> [parameters]', 2)
++
++    sub = argv[2]
++    args = argv[3:]
++
++    handlers = {
++        'cp': cmd_cp,
++        'ls': cmd_ls,
++        'mb': cmd_mb,
++        'rm': cmd_rm,
++        'sync': cmd_sync,
++    }
++
++    if sub not in handlers:
++        err_exit("aws: error: argument subcommand: Invalid choice: '%s'" % sub,
++                 2)
++
++    try:
++        rc = handlers[sub](args)
++        sys.exit(rc if rc else 0)
++    except SystemExit:
++        raise
++    except ClientError as e:
++        sys.stderr.write('%s\n' % str(e))
++        sys.exit(1)
++    except BrokenPipeError:
++        sys.exit(0)
++    except Exception as e:
++        sys.stderr.write('%s\n' % str(e))
++        sys.exit(1)
++
++
++if __name__ == '__main__':
++    main()

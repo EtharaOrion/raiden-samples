@@ -1,0 +1,964 @@
+diff --git a/submission/aws b/submission/aws
+new file mode 100755
+index 0000000..1489a86
+--- /dev/null
++++ b/submission/aws
+@@ -0,0 +1,958 @@
++#!/usr/bin/env python3
++import sys
++import os
++import hashlib
++import hmac
++import datetime
++import http.client
++import urllib.parse
++import xml.etree.ElementTree as ET
++
++S3_NS = 'http://s3.amazonaws.com/doc/2006-03-01/'
++EMPTY_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
++
++
++def uni_print(s, out=None):
++    if out is None:
++        out = sys.stdout
++    out.write(s)
++    out.flush()
++
++
++class ClientError(Exception):
++    def __init__(self, code, message, status=400):
++        self.code = code
++        self.message = message
++        self.status = status
++        super().__init__(message)
++
++    def __str__(self):
++        return "An error occurred (%s) when calling the operation: %s" % (
++            self.code, self.message)
++
++
++def get_config():
++    ak = os.environ.get('AWS_ACCESS_KEY_ID', '')
++    sk = os.environ.get('AWS_SECRET_ACCESS_KEY', '')
++    tok = os.environ.get('AWS_SESSION_TOKEN')
++    region = os.environ.get('AWS_REGION') or os.environ.get(
++        'AWS_DEFAULT_REGION') or 'us-east-1'
++    endpoint = os.environ.get('AWS_ENDPOINT_URL_S3') or os.environ.get(
++        'AWS_ENDPOINT_URL') or 'https://s3.%s.amazonaws.com' % region
++    return ak, sk, tok, region, endpoint
++
++
++def find_bucket_key(path):
++    if path.startswith('s3://'):
++        path = path[5:]
++    parts = path.split('/', 1)
++    bucket = parts[0]
++    key = parts[1] if len(parts) > 1 else ''
++    return bucket, key
++
++
++def split_s3_bucket_key(path):
++    if path.startswith('s3://'):
++        path = path[5:]
++    return find_bucket_key(path)
++
++
++def is_s3express_bucket(bucket):
++    return bucket.endswith('--x-s3')
++
++
++def _uri_encode(s, encode_slash=True):
++    safe = '-._~'
++    if not encode_slash:
++        safe += '/'
++    return urllib.parse.quote(s, safe=safe)
++
++
++class S3Client:
++    def __init__(self):
++        (self.ak, self.sk, self.tok, self.region,
++         self.endpoint) = get_config()
++        self.region_name = self.region
++
++    def _sign_and_send(self, method, bucket, key='', query=None, body=b'',
++                       extra_headers=None):
++        if query is None:
++            query = {}
++        parsed = urllib.parse.urlparse(self.endpoint)
++        host = parsed.netloc
++        scheme = parsed.scheme
++
++        path = '/' + bucket
++        if key:
++            path += '/' + key
++        canonical_uri = _uri_encode(path, encode_slash=False)
++
++        qitems = sorted(query.items())
++        canonical_qs = '&'.join(
++            '%s=%s' % (_uri_encode(k), _uri_encode(v)) for k, v in qitems)
++
++        now = datetime.datetime.utcnow()
++        amzdate = now.strftime('%Y%m%dT%H%M%SZ')
++        datestamp = now.strftime('%Y%m%d')
++
++        payload_hash = hashlib.sha256(body).hexdigest() if body else EMPTY_SHA256
++
++        headers = {
++            'host': host,
++            'x-amz-content-sha256': payload_hash,
++            'x-amz-date': amzdate,
++        }
++        if self.tok:
++            headers['x-amz-security-token'] = self.tok
++        if extra_headers:
++            for hk, hv in extra_headers.items():
++                if hv is not None:
++                    headers[hk.lower()] = str(hv)
++
++        signed_names = sorted(headers.keys())
++        canonical_headers = ''.join(
++            '%s:%s\n' % (n, headers[n].strip()) for n in signed_names)
++        signed_headers = ';'.join(signed_names)
++
++        canonical_request = '\n'.join([
++            method, canonical_uri, canonical_qs, canonical_headers,
++            signed_headers, payload_hash])
++
++        cred_scope = '%s/%s/s3/aws4_request' % (datestamp, self.region)
++        string_to_sign = '\n'.join([
++            'AWS4-HMAC-SHA256', amzdate, cred_scope,
++            hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()])
++
++        def _hmac(k, m):
++            return hmac.new(k, m.encode('utf-8'), hashlib.sha256).digest()
++
++        kdate = _hmac(('AWS4' + self.sk).encode('utf-8'), datestamp)
++        kregion = _hmac(kdate, self.region)
++        kservice = _hmac(kregion, 's3')
++        ksigning = _hmac(kservice, 'aws4_request')
++        signature = hmac.new(
++            ksigning, string_to_sign.encode('utf-8'),
++            hashlib.sha256).hexdigest()
++
++        auth = ('AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, '
++                'Signature=%s' % (self.ak, cred_scope, signed_headers,
++                                  signature))
++
++        req_headers = dict(headers)
++        req_headers['Authorization'] = auth
++        req_headers['Content-Length'] = str(len(body))
++
++        url_path = canonical_uri
++        if canonical_qs:
++            url_path += '?' + canonical_qs
++
++        if scheme == 'https':
++            conn = http.client.HTTPSConnection(host, timeout=60)
++        else:
++            conn = http.client.HTTPConnection(host, timeout=60)
++        try:
++            conn.request(method, url_path, body=body, headers=req_headers)
++            resp = conn.getresponse()
++            data = resp.read()
++            status = resp.status
++        except Exception as e:
++            raise ClientError('ConnectionError', str(e), 500)
++        finally:
++            conn.close()
++
++        if status < 200 or status >= 300:
++            self._raise_error(data, status)
++        return status, data
++
++    def _raise_error(self, data, status):
++        code = 'Unknown'
++        message = 'Unknown error'
++        try:
++            root = ET.fromstring(data)
++            c = root.find('Code')
++            m = root.find('Message')
++            if c is not None and c.text:
++                code = c.text
++            if m is not None and m.text:
++                message = m.text
++        except Exception:
++            pass
++        if code == 'Unknown':
++            if status == 404:
++                code = 'NoSuchKey'
++                message = 'The specified key does not exist.'
++            elif status == 403:
++                code = 'AccessDenied'
++                message = 'Access Denied'
++        raise ClientError(code, message, status)
++
++    def create_bucket(self, Bucket, CreateBucketConfiguration=None):
++        body = b''
++        if CreateBucketConfiguration:
++            lc = CreateBucketConfiguration['LocationConstraint']
++            body = ('<CreateBucketConfiguration xmlns="%s">'
++                    '<LocationConstraint>%s</LocationConstraint>'
++                    '</CreateBucketConfiguration>' % (S3_NS, lc)).encode('utf-8')
++        self._sign_and_send('PUT', Bucket, body=body)
++
++    def delete_bucket(self, Bucket):
++        self._sign_and_send('DELETE', Bucket)
++
++    def put_object(self, Bucket, Key, Body, extra_headers=None):
++        self._sign_and_send('PUT', Bucket, Key, body=Body,
++                            extra_headers=extra_headers)
++
++    def get_object(self, Bucket, Key):
++        _, data = self._sign_and_send('GET', Bucket, Key)
++        return data
++
++    def delete_object(self, Bucket, Key, extra_headers=None):
++        self._sign_and_send('DELETE', Bucket, Key,
++                            extra_headers=extra_headers)
++
++    def copy_object(self, Bucket, Key, CopySource, extra_headers=None):
++        src = '/' + CopySource['Bucket'] + '/' + CopySource['Key']
++        parsed = urllib.parse.urlparse(self.endpoint)
++        host = parsed.netloc
++        scheme = parsed.scheme
++        now = datetime.datetime.utcnow()
++        amzdate = now.strftime('%Y%m%dT%H%M%SZ')
++        datestamp = now.strftime('%Y%m%d')
++        path = '/' + Bucket + '/' + Key
++        canonical_uri = _uri_encode(path, encode_slash=False)
++        payload_hash = EMPTY_SHA256
++        headers = {
++            'host': host,
++            'x-amz-content-sha256': payload_hash,
++            'x-amz-date': amzdate,
++            'x-amz-copy-source': _uri_encode(src, encode_slash=False),
++        }
++        if self.tok:
++            headers['x-amz-security-token'] = self.tok
++        if extra_headers:
++            for hk, hv in extra_headers.items():
++                if hv is not None:
++                    headers[hk.lower()] = str(hv)
++        signed_names = sorted(headers.keys())
++        canonical_headers = ''.join(
++            '%s:%s\n' % (n, headers[n].strip()) for n in signed_names)
++        signed_headers = ';'.join(signed_names)
++        canonical_request = '\n'.join([
++            'PUT', canonical_uri, '', canonical_headers,
++            signed_headers, payload_hash])
++        cred_scope = '%s/%s/s3/aws4_request' % (datestamp, self.region)
++        string_to_sign = '\n'.join([
++            'AWS4-HMAC-SHA256', amzdate, cred_scope,
++            hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()])
++
++        def _hmac(k, m):
++            return hmac.new(k, m.encode('utf-8'), hashlib.sha256).digest()
++        kdate = _hmac(('AWS4' + self.sk).encode('utf-8'), datestamp)
++        kregion = _hmac(kdate, self.region)
++        kservice = _hmac(kregion, 's3')
++        ksigning = _hmac(kservice, 'aws4_request')
++        signature = hmac.new(
++            ksigning, string_to_sign.encode('utf-8'),
++            hashlib.sha256).hexdigest()
++        auth = ('AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, '
++                'Signature=%s' % (self.ak, cred_scope, signed_headers,
++                                  signature))
++        req_headers = dict(headers)
++        req_headers['Authorization'] = auth
++        req_headers['Content-Length'] = '0'
++        if scheme == 'https':
++            conn = http.client.HTTPSConnection(host, timeout=60)
++        else:
++            conn = http.client.HTTPConnection(host, timeout=60)
++        try:
++            conn.request('PUT', canonical_uri, body=b'', headers=req_headers)
++            resp = conn.getresponse()
++            data = resp.read()
++            status = resp.status
++        except Exception as e:
++            raise ClientError('ConnectionError', str(e), 500)
++        finally:
++            conn.close()
++        if status < 200 or status >= 300:
++            self._raise_error(data, status)
++
++    def list_objects_v2(self, Bucket, Prefix='', Delimiter=None):
++        query = {'list-type': '2'}
++        if Prefix:
++            query['prefix'] = Prefix
++        if Delimiter:
++            query['delimiter'] = Delimiter
++        results = []
++        prefixes = []
++        cont = None
++        while True:
++            q = dict(query)
++            if cont:
++                q['continuation-token'] = cont
++            _, data = self._sign_and_send('GET', Bucket, query=q)
++            root = ET.fromstring(data)
++
++            def strip(t):
++                return t.split('}')[-1]
++            truncated = False
++            nexttok = None
++            for child in root:
++                tag = strip(child.tag)
++                if tag == 'Contents':
++                    keyv = None
++                    size = 0
++                    lm = ''
++                    for c in child:
++                        ct = strip(c.tag)
++                        if ct == 'Key':
++                            keyv = c.text
++                        elif ct == 'Size':
++                            size = int(c.text or '0')
++                        elif ct == 'LastModified':
++                            lm = c.text or ''
++                    results.append({'Key': keyv, 'Size': size,
++                                    'LastModified': lm})
++                elif tag == 'CommonPrefixes':
++                    for c in child:
++                        if strip(c.tag) == 'Prefix':
++                            prefixes.append(c.text)
++                elif tag == 'IsTruncated':
++                    truncated = (child.text == 'true')
++                elif tag == 'NextContinuationToken':
++                    nexttok = child.text
++            if truncated and nexttok:
++                cont = nexttok
++            else:
++                break
++        return results, prefixes
++
++    def list_buckets(self):
++        _, data = self._sign_and_send('GET', '')
++        root = ET.fromstring(data)
++
++        def strip(t):
++            return t.split('}')[-1]
++        buckets = []
++        for elem in root.iter():
++            if strip(elem.tag) == 'Bucket':
++                name = None
++                cd = ''
++                for c in elem:
++                    if strip(c.tag) == 'Name':
++                        name = c.text
++                    elif strip(c.tag) == 'CreationDate':
++                        cd = c.text or ''
++                if name:
++                    buckets.append({'Name': name, 'CreationDate': cd})
++        return buckets
++
++
++def fmt_last_mod(iso):
++    try:
++        if iso.endswith('Z'):
++            iso = iso[:-1]
++        if '.' in iso:
++            iso = iso.split('.')[0]
++        dt = datetime.datetime.strptime(iso, '%Y-%m-%dT%H:%M:%S')
++        return dt.strftime('%Y-%m-%d %H:%M:%S')
++    except Exception:
++        return datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
++
++
++USAGE_ERR = 252
++PARAM_ERR = 255
++LOCAL_FILE_ERR = 2
++
++
++def err(msg):
++    uni_print(msg + '\n', sys.stderr)
++
++
++def cmd_ls(args):
++    paths = None
++    recursive = False
++    i = 0
++    while i < len(args):
++        a = args[i]
++        if a == '--recursive':
++            recursive = True
++        elif a.startswith('--'):
++            err('Unknown options: %s' % a)
++            return USAGE_ERR
++        else:
++            if paths is not None:
++                err('Unknown options: %s' % a)
++                return USAGE_ERR
++            paths = a
++        i += 1
++    client = S3Client()
++    if paths is None:
++        paths = ''
++    path = paths
++    if path.startswith('s3://'):
++        path = path[5:]
++    bucket, key = find_bucket_key(path)
++    try:
++        if not bucket:
++            buckets = client.list_buckets()
++            for b in buckets:
++                uni_print('%s %s\n' % (fmt_last_mod(b['CreationDate']),
++                                       b['Name']))
++            return 0
++        elif recursive:
++            results, _ = client.list_objects_v2(bucket, key)
++            found = False
++            for o in results:
++                found = True
++                uni_print('%s %10d %s\n' % (
++                    fmt_last_mod(o['LastModified']), o['Size'], o['Key']))
++            if key and not found:
++                return 1
++            return 0
++        else:
++            results, prefixes = client.list_objects_v2(
++                bucket, key, Delimiter='/')
++            found = False
++            for p in prefixes:
++                found = True
++                uni_print('%s%s %s\n' % (' ' * 27, 'PRE',
++                                         p[len(key):] if key else p))
++            for o in results:
++                base = o['Key'][len(key):] if key else o['Key']
++                if not base:
++                    continue
++                found = True
++                uni_print('%s %10d %s\n' % (
++                    fmt_last_mod(o['LastModified']), o['Size'], base))
++            if key and not found:
++                return 1
++            return 0
++    except ClientError as e:
++        err(str(e))
++        return 1
++
++
++def cmd_mb(args):
++    region = None
++    path = None
++    i = 0
++    while i < len(args):
++        a = args[i]
++        if a == '--region':
++            i += 1
++            if i < len(args):
++                region = args[i]
++        elif a.startswith('--'):
++            err('Unknown options: %s' % a)
++            return USAGE_ERR
++        else:
++            path = a
++        i += 1
++    if path is None:
++        err('usage: aws s3 mb <S3Uri>')
++        return USAGE_ERR
++    if not path.startswith('s3://'):
++        err('Error: Invalid argument type')
++        return USAGE_ERR
++    bucket, _ = split_s3_bucket_key(path)
++    if is_s3express_bucket(bucket):
++        err('Cannot use mb command with a directory bucket.')
++        return USAGE_ERR
++    client = S3Client()
++    if region:
++        client.region_name = region
++        client.region = region
++    params = {'Bucket': bucket}
++    if client.region_name != 'us-east-1':
++        params['CreateBucketConfiguration'] = {
++            'LocationConstraint': client.region_name}
++    try:
++        client.create_bucket(**params)
++        uni_print('make_bucket: %s\n' % bucket)
++        return 0
++    except Exception as e:
++        uni_print('make_bucket failed: %s %s\n' % (path, e), sys.stderr)
++        return 1
++
++
++def cmd_rb(args):
++    path = None
++    force = False
++    i = 0
++    while i < len(args):
++        a = args[i]
++        if a == '--force':
++            force = True
++        elif a.startswith('--'):
++            err('Unknown options: %s' % a)
++            return USAGE_ERR
++        else:
++            path = a
++        i += 1
++    if path is None or not path.startswith('s3://'):
++        err('Error: Invalid argument type')
++        return USAGE_ERR
++    bucket, key = split_s3_bucket_key(path)
++    if key:
++        err('Please specify a valid bucket name only. E.g. s3://%s' % bucket)
++        return USAGE_ERR
++    client = S3Client()
++    if force:
++        try:
++            results, _ = client.list_objects_v2(bucket)
++            for o in results:
++                client.delete_object(bucket, o['Key'])
++                uni_print('delete: s3://%s/%s\n' % (bucket, o['Key']))
++        except ClientError as e:
++            uni_print('remove_bucket failed: %s %s\n' % (path, e), sys.stderr)
++            return PARAM_ERR
++    try:
++        client.delete_bucket(Bucket=bucket)
++        uni_print('remove_bucket: %s\n' % bucket)
++        return 0
++    except Exception as e:
++        uni_print('remove_bucket failed: %s %s\n' % (path, e), sys.stderr)
++        return 1
++
++
++def cmd_rm(args):
++    path = None
++    recursive = False
++    dryrun = False
++    request_payer = None
++    i = 0
++    while i < len(args):
++        a = args[i]
++        if a == '--recursive':
++            recursive = True
++        elif a == '--dryrun':
++            dryrun = True
++        elif a == '--request-payer':
++            request_payer = 'requester'
++            if i + 1 < len(args) and args[i + 1] == 'requester':
++                i += 1
++        elif a.startswith('--'):
++            err('Unknown options: %s' % a)
++            return USAGE_ERR
++        else:
++            path = a
++        i += 1
++    if path is None or not path.startswith('s3://'):
++        err('Error: Invalid argument type')
++        return USAGE_ERR
++    eh = _build_extra_headers(request_payer=request_payer)
++    client = S3Client()
++    bucket, key = find_bucket_key(path)
++    if recursive:
++        try:
++            results, _ = client.list_objects_v2(bucket, key)
++            for o in results:
++                if dryrun:
++                    uni_print('(dryrun) delete: s3://%s/%s\n' % (
++                        bucket, o['Key']))
++                else:
++                    client.delete_object(bucket, o['Key'], extra_headers=eh)
++                    uni_print('delete: s3://%s/%s\n' % (bucket, o['Key']))
++            return 0
++        except ClientError as e:
++            uni_print('delete failed: %s %s\n' % (path, e), sys.stderr)
++            return 1
++    if dryrun:
++        uni_print('(dryrun) delete: s3://%s/%s\n' % (bucket, key))
++        return 0
++    try:
++        client.delete_object(bucket, key, extra_headers=eh)
++        uni_print('delete: s3://%s/%s\n' % (bucket, key))
++        return 0
++    except ClientError as e:
++        uni_print('delete failed: s3://%s/%s %s\n' % (bucket, key, e),
++                  sys.stderr)
++        return 1
++
++
++def _is_s3(p):
++    return p.startswith('s3://')
++
++
++def _build_extra_headers(sse=None, sse_kms_key_id=None,
++                         website_redirect=None, request_payer=None):
++    h = {}
++    if sse:
++        h['x-amz-server-side-encryption'] = sse
++    if sse_kms_key_id:
++        h['x-amz-server-side-encryption-aws-kms-key-id'] = sse_kms_key_id
++    if website_redirect:
++        h['x-amz-website-redirect-location'] = website_redirect
++    if request_payer:
++        h['x-amz-request-payer'] = request_payer
++    return h or None
++
++
++def cmd_cp(args, is_move=False):
++    positional = []
++    recursive = False
++    dryrun = False
++    sse = None
++    sse_kms_key_id = None
++    website_redirect = None
++    request_payer = None
++    i = 0
++    while i < len(args):
++        a = args[i]
++        if a == '--recursive':
++            recursive = True
++        elif a == '--dryrun':
++            dryrun = True
++        elif a == '--sse':
++            sse = 'AES256'
++            if i + 1 < len(args) and args[i + 1] in ('AES256', 'aws:kms'):
++                i += 1
++                sse = args[i]
++        elif a == '--sse-kms-key-id':
++            i += 1
++            sse_kms_key_id = args[i] if i < len(args) else None
++        elif a == '--website-redirect':
++            i += 1
++            website_redirect = args[i] if i < len(args) else None
++        elif a == '--request-payer':
++            request_payer = 'requester'
++            if i + 1 < len(args) and args[i + 1] == 'requester':
++                i += 1
++        elif a == '-':
++            positional.append(a)
++        elif a.startswith('--'):
++            err('Unknown options: %s' % a)
++            return USAGE_ERR
++        else:
++            positional.append(a)
++        i += 1
++    eh = _build_extra_headers(sse=sse, sse_kms_key_id=sse_kms_key_id,
++                              website_redirect=website_redirect,
++                              request_payer=request_payer)
++    op = 'move' if is_move else 'copy'
++    if len(positional) != 2:
++        err('usage: aws s3 %s <src> <dst>' % ('mv' if is_move else 'cp'))
++        return USAGE_ERR
++    src, dst = positional
++    client = S3Client()
++
++    src_is_s3 = _is_s3(src)
++    dst_is_s3 = _is_s3(dst)
++
++    # same src/dst for mv
++    if is_move and src_is_s3 and dst_is_s3:
++        sb, sk = find_bucket_key(src)
++        db, dk = find_bucket_key(dst)
++        if sb == db and sk == dk:
++            err('Cannot mv a file onto itself.')
++            return USAGE_ERR
++
++    try:
++        if recursive and src_is_s3 and dst_is_s3:
++            sb, sk = find_bucket_key(src)
++            db, dk = find_bucket_key(dst)
++            results, _ = client.list_objects_v2(sb, sk)
++            for o in results:
++                rel = o['Key'][len(sk):]
++                newkey = dk.rstrip('/') + '/' + rel if dk else rel
++                s3src = 's3://%s/%s' % (sb, o['Key'])
++                s3dst = 's3://%s/%s' % (db, newkey)
++                if dryrun:
++                    uni_print('(dryrun) %s: %s to %s\n' % (op, s3src, s3dst))
++                else:
++                    client.copy_object(db, newkey,
++                                       {'Bucket': sb, 'Key': o['Key']},
++                                       extra_headers=eh)
++                    uni_print('%s: %s to %s\n' % (op, s3src, s3dst))
++                    if is_move:
++                        client.delete_object(sb, o['Key'])
++            return 0
++
++        if recursive and (not src_is_s3) and dst_is_s3:
++            db, dk = find_bucket_key(dst)
++            if not os.path.isdir(src):
++                err('%s to %s does not exist' % (src, dst))
++                return 1
++            for rootdir, _, files in os.walk(src):
++                for fn in files:
++                    fp = os.path.join(rootdir, fn)
++                    rel = os.path.relpath(fp, src).replace(os.sep, '/')
++                    newkey = dk.rstrip('/') + '/' + rel if dk else rel
++                    s3dst = 's3://%s/%s' % (db, newkey)
++                    if dryrun:
++                        uni_print('(dryrun) upload: %s to %s\n' % (fp, s3dst))
++                    else:
++                        with open(fp, 'rb') as f:
++                            body = f.read()
++                        client.put_object(db, newkey, body, extra_headers=eh)
++                        uni_print('upload: %s to %s\n' % (fp, s3dst))
++            return 0
++
++        # streaming from stdin
++        if src == '-' and dst_is_s3:
++            db, dk = find_bucket_key(dst)
++            body = sys.stdin.buffer.read()
++            client.put_object(db, dk, body, extra_headers=eh)
++            return 0
++
++        if src_is_s3 and dst == '-':
++            sb, sk = find_bucket_key(src)
++            data = client.get_object(sb, sk)
++            sys.stdout.buffer.write(data)
++            sys.stdout.buffer.flush()
++            return 0
++
++        # local -> s3 upload
++        if (not src_is_s3) and dst_is_s3:
++            if not os.path.isfile(src):
++                err('upload failed: %s The user-provided path %s does not '
++                    'exist.' % (src, src))
++                return LOCAL_FILE_ERR
++            db, dk = find_bucket_key(dst)
++            if dk == '' or dk.endswith('/'):
++                dk = dk + os.path.basename(src)
++            s3dst = 's3://%s/%s' % (db, dk)
++            if dryrun:
++                uni_print('(dryrun) upload: %s to %s\n' % (src, s3dst))
++                return 0
++            with open(src, 'rb') as f:
++                body = f.read()
++            client.put_object(db, dk, body, extra_headers=eh)
++            uni_print('upload: %s to %s\n' % (src, s3dst))
++            if is_move:
++                os.remove(src)
++            return 0
++
++        # s3 -> local download
++        if src_is_s3 and (not dst_is_s3):
++            sb, sk = find_bucket_key(src)
++            outpath = dst
++            if os.path.isdir(dst) or dst.endswith('/') or dst.endswith(os.sep):
++                outpath = os.path.join(dst, os.path.basename(sk))
++            s3src = 's3://%s/%s' % (sb, sk)
++            if dryrun:
++                uni_print('(dryrun) download: %s to %s\n' % (s3src, outpath))
++                return 0
++            data = client.get_object(sb, sk)
++            with open(outpath, 'wb') as f:
++                f.write(data)
++            uni_print('download: %s to %s\n' % (s3src, outpath))
++            if is_move:
++                client.delete_object(sb, sk)
++            return 0
++
++        # s3 -> s3 copy
++        if src_is_s3 and dst_is_s3:
++            sb, sk = find_bucket_key(src)
++            db, dk = find_bucket_key(dst)
++            if dk == '' or dk.endswith('/'):
++                dk = dk + os.path.basename(sk)
++            s3src = 's3://%s/%s' % (sb, sk)
++            s3dst = 's3://%s/%s' % (db, dk)
++            if dryrun:
++                uni_print('(dryrun) %s: %s to %s\n' % (op, s3src, s3dst))
++                return 0
++            client.copy_object(db, dk, {'Bucket': sb, 'Key': sk},
++                               extra_headers=eh)
++            uni_print('%s: %s to %s\n' % (op, s3src, s3dst))
++            if is_move:
++                client.delete_object(sb, sk)
++            return 0
++
++        err('usage: aws s3 %s <src> <dst>' % ('mv' if is_move else 'cp'))
++        return USAGE_ERR
++
++    except ClientError as e:
++        if (not src_is_s3) and dst_is_s3:
++            uni_print('upload failed: %s to %s %s\n' % (src, dst, e),
++                      sys.stderr)
++        elif src_is_s3 and (not dst_is_s3):
++            uni_print('download failed: %s to %s %s\n' % (src, dst, e),
++                      sys.stderr)
++        else:
++            uni_print('%s failed: %s to %s %s\n' % (op, src, dst, e),
++                      sys.stderr)
++        return 1
++
++
++def cmd_sync(args):
++    positional = []
++    dryrun = False
++    delete = False
++    sse = None
++    sse_kms_key_id = None
++    website_redirect = None
++    request_payer = None
++    i = 0
++    while i < len(args):
++        a = args[i]
++        if a == '--dryrun':
++            dryrun = True
++        elif a == '--delete':
++            delete = True
++        elif a == '--sse':
++            sse = 'AES256'
++            if i + 1 < len(args) and args[i + 1] in ('AES256', 'aws:kms'):
++                i += 1
++                sse = args[i]
++        elif a == '--sse-kms-key-id':
++            i += 1
++            sse_kms_key_id = args[i] if i < len(args) else None
++        elif a == '--website-redirect':
++            i += 1
++            website_redirect = args[i] if i < len(args) else None
++        elif a == '--request-payer':
++            request_payer = 'requester'
++            if i + 1 < len(args) and args[i + 1] == 'requester':
++                i += 1
++        elif a == '--recursive':
++            err('Unknown options: --recursive')
++            return USAGE_ERR
++        elif a.startswith('--'):
++            err('Unknown options: %s' % a)
++            return USAGE_ERR
++        else:
++            positional.append(a)
++        i += 1
++    eh = _build_extra_headers(sse=sse, sse_kms_key_id=sse_kms_key_id,
++                              website_redirect=website_redirect,
++                              request_payer=request_payer)
++    if len(positional) != 2:
++        err('usage: aws s3 sync <src> <dst>')
++        return USAGE_ERR
++    src, dst = positional
++    client = S3Client()
++    src_is_s3 = _is_s3(src)
++    dst_is_s3 = _is_s3(dst)
++
++    try:
++        if (not src_is_s3) and dst_is_s3:
++            if not os.path.isdir(src):
++                err('The user-provided path %s does not exist.' % src)
++                return PARAM_ERR
++            db, dk = find_bucket_key(dst)
++            existing, _ = client.list_objects_v2(db, dk)
++            existing_map = {o['Key']: o for o in existing}
++            for rootdir, _, files in os.walk(src):
++                for fn in files:
++                    fp = os.path.join(rootdir, fn)
++                    rel = os.path.relpath(fp, src).replace(os.sep, '/')
++                    newkey = dk.rstrip('/') + '/' + rel if dk else rel
++                    size = os.path.getsize(fp)
++                    if newkey in existing_map and \
++                            existing_map[newkey]['Size'] == size:
++                        continue
++                    s3dst = 's3://%s/%s' % (db, newkey)
++                    if dryrun:
++                        uni_print('(dryrun) upload: %s to %s\n' % (fp, s3dst))
++                    else:
++                        with open(fp, 'rb') as f:
++                            body = f.read()
++                        client.put_object(db, newkey, body, extra_headers=eh)
++                        uni_print('upload: %s to %s\n' % (fp, s3dst))
++            return 0
++
++        if src_is_s3 and (not dst_is_s3):
++            sb, sk = find_bucket_key(src)
++            results, _ = client.list_objects_v2(sb, sk)
++            if not os.path.isdir(dst):
++                try:
++                    os.makedirs(dst, exist_ok=True)
++                except Exception:
++                    pass
++            for o in results:
++                rel = o['Key'][len(sk):].lstrip('/')
++                outpath = os.path.join(dst, rel)
++                s3src = 's3://%s/%s' % (sb, o['Key'])
++                if os.path.isfile(outpath) and \
++                        os.path.getsize(outpath) == o['Size']:
++                    continue
++                if dryrun:
++                    uni_print('(dryrun) download: %s to %s\n' % (
++                        s3src, outpath))
++                else:
++                    d = os.path.dirname(outpath)
++                    if d and not os.path.isdir(d):
++                        os.makedirs(d, exist_ok=True)
++                    data = client.get_object(sb, o['Key'])
++                    with open(outpath, 'wb') as f:
++                        f.write(data)
++                    uni_print('download: %s to %s\n' % (s3src, outpath))
++            return 0
++
++        if src_is_s3 and dst_is_s3:
++            sb, sk = find_bucket_key(src)
++            db, dk = find_bucket_key(dst)
++            results, _ = client.list_objects_v2(sb, sk)
++            existing, _ = client.list_objects_v2(db, dk)
++            existing_map = {o['Key']: o for o in existing}
++            for o in results:
++                rel = o['Key'][len(sk):].lstrip('/')
++                newkey = dk.rstrip('/') + '/' + rel if dk else rel
++                if newkey in existing_map and \
++                        existing_map[newkey]['Size'] == o['Size']:
++                    continue
++                s3src = 's3://%s/%s' % (sb, o['Key'])
++                s3dst = 's3://%s/%s' % (db, newkey)
++                if dryrun:
++                    uni_print('(dryrun) copy: %s to %s\n' % (s3src, s3dst))
++                else:
++                    client.copy_object(db, newkey,
++                                       {'Bucket': sb, 'Key': o['Key']},
++                                       extra_headers=eh)
++                    uni_print('copy: %s to %s\n' % (s3src, s3dst))
++            return 0
++
++        err('Error: Invalid argument type')
++        return LOCAL_FILE_ERR
++
++    except ClientError as e:
++        err(str(e))
++        return LOCAL_FILE_ERR
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 2:
++        err('usage: aws s3 <command>')
++        return USAGE_ERR
++    if argv[1] != 's3':
++        err("Invalid choice: '%s'" % argv[1])
++        return USAGE_ERR
++    if len(argv) < 3:
++        err('usage: aws s3 <command>')
++        return USAGE_ERR
++    sub = argv[2]
++    rest = argv[3:]
++    if sub == 'ls':
++        return cmd_ls(rest)
++    elif sub == 'mb':
++        return cmd_mb(rest)
++    elif sub == 'rb':
++        return cmd_rb(rest)
++    elif sub == 'rm':
++        return cmd_rm(rest)
++    elif sub == 'cp':
++        return cmd_cp(rest, is_move=False)
++    elif sub == 'mv':
++        return cmd_cp(rest, is_move=True)
++    elif sub == 'sync':
++        return cmd_sync(rest)
++    else:
++        err("Invalid choice: '%s'" % sub)
++        return USAGE_ERR
++
++
++if __name__ == '__main__':
++    try:
++        sys.exit(main())
++    except ClientError as e:
++        err(str(e))
++        sys.exit(1)
++    except BrokenPipeError:
++        sys.exit(0)
++    except KeyboardInterrupt:
++        sys.exit(130)
++    except Exception as e:
++        err(str(e))
++        sys.exit(1)

@@ -1,0 +1,20 @@
+from _ddb_http import to_item, from_item, to_av, from_av
+
+
+def test_query_missing_key_condition_invalid_args(cli, ddb_client):
+    table_name = "QueryInvalidArgsTbl"
+    ddb_client.create_table(
+        TableName=table_name,
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        ProvisionedThroughput={"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
+    )
+    assert table_name in ddb_client.list_tables()["TableNames"]
+
+    long_table = "x" * 512
+    result = cli("dynamodb", "query", "--table-name", long_table)
+    assert result.returncode != 0
+    assert (
+        "ValidationException" in result.stderr
+        or "ResourceNotFoundException" in result.stderr
+    )

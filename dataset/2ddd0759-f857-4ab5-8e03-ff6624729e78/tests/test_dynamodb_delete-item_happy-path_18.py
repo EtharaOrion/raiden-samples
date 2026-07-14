@@ -1,0 +1,27 @@
+from _ddb_http import to_item, from_item, to_av, from_av
+
+
+def test_delete_item_removes_existing_item(cli, ddb_client):
+    table_name = "DeleteItemTable"
+    ddb_client.create_table(
+        TableName=table_name,
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        ProvisionedThroughput={"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
+    )
+    ddb_client.put_item(
+        TableName=table_name,
+        Item={"pk": {"S": "item1"}, "data": {"S": "value1"}},
+    )
+    before = ddb_client.get_item(TableName=table_name, Key={"pk": {"S": "item1"}})
+    assert before.get("Item") is not None
+
+    result = cli(
+        "dynamodb", "delete-item",
+        "--table-name", table_name,
+        "--key", '{"pk":{"S":"item1"}}',
+    )
+    assert result.returncode == 0
+
+    after = ddb_client.get_item(TableName=table_name, Key={"pk": {"S": "item1"}})
+    assert after.get("Item") is None

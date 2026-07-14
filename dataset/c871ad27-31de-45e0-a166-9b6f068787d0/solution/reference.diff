@@ -1,0 +1,938 @@
+diff --git a/submission/aws b/submission/aws
+new file mode 100755
+index 0000000..86e999b
+--- /dev/null
++++ b/submission/aws
+@@ -0,0 +1,932 @@
++#!/usr/bin/env python3
++import sys
++import os
++import hashlib
++import hmac
++import datetime
++import urllib.parse
++import http.client
++import xml.etree.ElementTree as ET
++
++S3_NS = 'http://s3.amazonaws.com/doc/2006-03-01/'
++EMPTY_SHA = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
++MULTIPART_THRESHOLD = 8 * 1024 * 1024
++
++
++def strip_ns(tag):
++    if '}' in tag:
++        return tag.split('}', 1)[1]
++    return tag
++
++
++class ClientError(Exception):
++    def __init__(self, code, message, status=400):
++        self.code = code
++        self.message = message
++        self.status = status
++        super().__init__(message)
++
++    def aws_str(self):
++        return "An error occurred (%s) when calling the operation: %s" % (
++            self.code, self.message)
++
++
++class S3Client:
++    def __init__(self):
++        self.access_key = os.environ.get('AWS_ACCESS_KEY_ID', '')
++        self.secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY', '')
++        self.token = os.environ.get('AWS_SESSION_TOKEN')
++        self.region = (os.environ.get('AWS_REGION')
++                       or os.environ.get('AWS_DEFAULT_REGION')
++                       or 'us-east-1')
++        endpoint = (os.environ.get('AWS_ENDPOINT_URL_S3')
++                    or os.environ.get('AWS_ENDPOINT_URL')
++                    or 'https://s3.%s.amazonaws.com' % self.region)
++        self.endpoint = endpoint.rstrip('/')
++        p = urllib.parse.urlparse(self.endpoint)
++        self.scheme = p.scheme
++        self.host = p.hostname
++        self.port = p.port
++        if p.path and p.path != '/':
++            self.base_path = p.path.rstrip('/')
++        else:
++            self.base_path = ''
++
++    def _sign(self, method, path, query, headers, body):
++        now = datetime.datetime.utcnow()
++        amzdate = now.strftime('%Y%m%dT%H%M%SZ')
++        datestamp = now.strftime('%Y%m%d')
++        payload_hash = hashlib.sha256(body).hexdigest() if body else EMPTY_SHA
++
++        host_header = self.host
++        if self.port:
++            host_header = '%s:%d' % (self.host, self.port)
++
++        headers['host'] = host_header
++        headers['x-amz-date'] = amzdate
++        headers['x-amz-content-sha256'] = payload_hash
++        if self.token:
++            headers['x-amz-security-token'] = self.token
++
++        segs = path.split('/')
++        canon_uri = '/'.join(urllib.parse.quote(s, safe='') for s in segs)
++        if not canon_uri:
++            canon_uri = '/'
++
++        items = []
++        for k in sorted(query.keys()):
++            items.append((urllib.parse.quote(str(k), safe='-_.~'),
++                          urllib.parse.quote(str(query[k]), safe='-_.~')))
++        canon_qs = '&'.join('%s=%s' % (k, v) for k, v in items)
++
++        signed_keys = sorted(h.lower() for h in headers.keys())
++        canon_headers = ''.join(
++            '%s:%s\n' % (k, headers[[h for h in headers if h.lower() == k][0]].strip())
++            for k in signed_keys)
++        signed_headers = ';'.join(signed_keys)
++
++        canon_req = '\n'.join([method, canon_uri, canon_qs, canon_headers,
++                               signed_headers, payload_hash])
++        scope = '%s/%s/s3/aws4_request' % (datestamp, self.region)
++        sts = '\n'.join(['AWS4-HMAC-SHA256', amzdate, scope,
++                         hashlib.sha256(canon_req.encode()).hexdigest()])
++
++        def _h(key, msg):
++            return hmac.new(key, msg.encode(), hashlib.sha256).digest()
++        kdate = _h(('AWS4' + self.secret_key).encode(), datestamp)
++        kregion = _h(kdate, self.region)
++        kservice = _h(kregion, 's3')
++        ksigning = _h(kservice, 'aws4_request')
++        sig = hmac.new(ksigning, sts.encode(), hashlib.sha256).hexdigest()
++
++        headers['Authorization'] = (
++            'AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s'
++            % (self.access_key, scope, signed_headers, sig))
++        return headers
++
++    def request(self, method, bucket=None, key=None, query=None,
++                body=b'', headers=None):
++        if query is None:
++            query = {}
++        if headers is None:
++            headers = {}
++        path = self.base_path
++        if bucket:
++            path += '/' + bucket
++            if key:
++                path += '/' + key
++        elif not path:
++            path = '/'
++
++        signed = self._sign(method, path if path else '/', query,
++                            dict(headers), body)
++
++        canon_uri = '/'.join(
++            urllib.parse.quote(s, safe='') for s in path.split('/'))
++        if not canon_uri:
++            canon_uri = '/'
++        qs = urllib.parse.urlencode(query)
++        url = canon_uri + ('?' + qs if qs else '')
++
++        if self.scheme == 'https':
++            conn = http.client.HTTPSConnection(self.host, self.port or 443)
++        else:
++            conn = http.client.HTTPConnection(self.host, self.port or 80)
++        try:
++            conn.request(method, url, body=body, headers=signed)
++            resp = conn.getresponse()
++            data = resp.read()
++        except Exception as e:
++            raise ClientError('EndpointConnectionError', str(e), 0)
++        finally:
++            pass
++
++        if resp.status >= 300:
++            code, msg = self._parse_error(data)
++            raise ClientError(code, msg, resp.status)
++        return resp.status, dict(resp.getheaders()), data
++
++    def _parse_error(self, data):
++        code = 'Unknown'
++        msg = 'Unknown error'
++        try:
++            root = ET.fromstring(data)
++            for child in root.iter():
++                t = strip_ns(child.tag)
++                if t == 'Code' and child.text:
++                    code = child.text
++                elif t == 'Message' and child.text:
++                    msg = child.text
++        except Exception:
++            pass
++        return code, msg
++
++
++def find_bucket_key(path):
++    if path.startswith('s3://'):
++        path = path[5:]
++    if '/' in path:
++        b, k = path.split('/', 1)
++        return b, k
++    return path, ''
++
++
++# ------------------- API helpers -------------------
++
++def put_object(client, bucket, key, body, headers=None):
++    client.request('PUT', bucket, key, body=body, headers=headers or {})
++
++
++def transfer_headers(args):
++    h = {}
++    wr = getattr(args, 'website_redirect', None)
++    if wr:
++        h['x-amz-website-redirect-location'] = wr
++    return h
++
++
++def get_object(client, bucket, key):
++    _, _, data = client.request('GET', bucket, key)
++    return data
++
++
++def delete_object(client, bucket, key):
++    client.request('DELETE', bucket, key)
++
++
++def delete_bucket(client, bucket):
++    client.request('DELETE', bucket)
++
++
++def list_objects_v2(client, bucket, prefix='', delimiter=None):
++    contents = []
++    prefixes = []
++    token = None
++    while True:
++        q = {'list-type': '2'}
++        if prefix:
++            q['prefix'] = prefix
++        if delimiter:
++            q['delimiter'] = delimiter
++        if token:
++            q['continuation-token'] = token
++        _, _, data = client.request('GET', bucket, query=q)
++        root = ET.fromstring(data)
++        truncated = False
++        next_token = None
++        for child in root:
++            t = strip_ns(child.tag)
++            if t == 'Contents':
++                item = {}
++                for c in child:
++                    ct = strip_ns(c.tag)
++                    item[ct] = c.text
++                contents.append(item)
++            elif t == 'CommonPrefixes':
++                for c in child:
++                    if strip_ns(c.tag) == 'Prefix':
++                        prefixes.append(c.text)
++            elif t == 'IsTruncated':
++                truncated = (child.text == 'true')
++            elif t == 'NextContinuationToken':
++                next_token = child.text
++        if truncated and next_token:
++            token = next_token
++        else:
++            break
++    return contents, prefixes
++
++
++# ------------------- ls -------------------
++
++def make_last_mod_str(ts):
++    try:
++        if ts.endswith('Z'):
++            ts = ts[:-1]
++        if '.' in ts:
++            ts = ts.split('.')[0]
++        dt = datetime.datetime.strptime(ts, '%Y-%m-%dT%H:%M:%S')
++        return dt.strftime('%Y-%m-%d %H:%M:%S')
++    except Exception:
++        return ts
++
++
++def cmd_ls(argv):
++    import argparse
++    parser = argparse.ArgumentParser(prog='aws s3 ls', add_help=False)
++    parser.add_argument('paths', nargs='?', default='s3://')
++    parser.add_argument('--recursive', action='store_true')
++    parser.add_argument('--page-size', type=int, default=None)
++    parser.add_argument('--human-readable', action='store_true')
++    parser.add_argument('--summarize', action='store_true')
++    parser.add_argument('--request-payer', nargs='?')
++    parser.add_argument('--bucket-name-prefix', default=None)
++    parser.add_argument('--bucket-region', default=None)
++    known_flags = ['--no-paginate', '--output', '--query', '--region',
++                   '--endpoint-url', '--profile', '--debug', '--color']
++    for f in known_flags:
++        parser.add_argument(f, nargs='?', default=None)
++    try:
++        args, unknown = parser.parse_known_args(argv)
++    except SystemExit:
++        sys.exit(252)
++    for u in unknown:
++        if u.startswith('--'):
++            sys.stderr.write("Unknown options: %s\n" % u)
++            sys.exit(252)
++
++    client = S3Client()
++    path = args.paths
++    if path.startswith('s3://'):
++        path = path[5:]
++    bucket, key = find_bucket_key(path)
++
++    try:
++        if not bucket:
++            _, _, data = client.request('GET')
++            root = ET.fromstring(data)
++            for child in root.iter():
++                if strip_ns(child.tag) == 'Bucket':
++                    name = None
++                    cd = None
++                    for c in child:
++                        if strip_ns(c.tag) == 'Name':
++                            name = c.text
++                        elif strip_ns(c.tag) == 'CreationDate':
++                            cd = c.text
++                    if name:
++                        print('%s %s' % (make_last_mod_str(cd or ''), name))
++            return 0
++        elif args.recursive:
++            contents, _ = list_objects_v2(client, bucket, key)
++            found = False
++            for item in contents:
++                found = True
++                lm = make_last_mod_str(item.get('LastModified', ''))
++                size = item.get('Size', '0')
++                print('%s %10s %s' % (lm, size, item.get('Key', '')))
++            if key and not found:
++                return 1
++            return 0
++        else:
++            contents, prefixes = list_objects_v2(client, bucket, key, '/')
++            found = False
++            for p in prefixes:
++                found = True
++                base = p
++                if key and base.startswith(key):
++                    disp = base[len(key):] if not key.endswith('/') else base[len(key):]
++                else:
++                    disp = base
++                print('%27s %s' % ('PRE', p.rsplit('/', 2)[-2] + '/' if p.endswith('/') and '/' in p.rstrip('/') else p))
++            for item in contents:
++                found = True
++                lm = make_last_mod_str(item.get('LastModified', ''))
++                size = item.get('Size', '0')
++                k = item.get('Key', '')
++                print('%s %10s %s' % (lm, size, k))
++            if key and not found:
++                return 1
++            return 0
++    except ClientError as e:
++        sys.stderr.write("\n" + e.aws_str() + "\n")
++        return 1
++
++
++# ------------------- transfer arg parsing -------------------
++
++def build_transfer_parser(prog):
++    import argparse
++    parser = argparse.ArgumentParser(prog=prog, add_help=False)
++    parser.add_argument('paths', nargs='*')
++    parser.add_argument('--dryrun', action='store_true')
++    parser.add_argument('--recursive', action='store_true')
++    parser.add_argument('--quiet', action='store_true')
++    parser.add_argument('--only-show-errors', action='store_true')
++    parser.add_argument('--no-progress', action='store_true')
++    parser.add_argument('--force', action='store_true')
++    parser.add_argument('--no-guess-mime-type', action='store_true')
++    parser.add_argument('--follow-symlinks', action='store_true')
++    parser.add_argument('--no-follow-symlinks', action='store_true')
++    parser.add_argument('--exclude', action='append', default=[])
++    parser.add_argument('--include', action='append', default=[])
++    for f in ['--copy-props', '--checksum-algorithm', '--checksum-mode',
++              '--content-type', '--content-encoding', '--content-disposition',
++              '--content-language', '--cache-control', '--expires',
++              '--metadata', '--metadata-directive', '--acl', '--grants',
++              '--expected-size', '--page-size', '--sse', '--sse-c',
++              '--sse-c-key', '--sse-kms-key-id', '--storage-class',
++              '--website-redirect', '--request-payer', '--source-region',
++              '--region', '--endpoint-url', '--profile', '--output',
++              '--query', '--color']:
++        parser.add_argument(f, nargs='?', default=None)
++    return parser
++
++
++def parse_transfer(prog, argv):
++    parser = build_transfer_parser(prog)
++    try:
++        args, unknown = parser.parse_known_args(argv)
++    except SystemExit:
++        sys.exit(252)
++    for u in unknown:
++        if u.startswith('--'):
++            sys.stderr.write("Unknown options: %s\n" % u)
++            sys.exit(252)
++    return args
++
++
++# ------------------- cp -------------------
++
++def is_s3(p):
++    return p.startswith('s3://')
++
++
++def cmd_cp(argv):
++    args = parse_transfer('aws s3 cp', argv)
++    paths = args.paths
++    if len(paths) != 2:
++        sys.stderr.write("usage: aws s3 cp <LocalPath> <S3Uri> or "
++                         "<S3Uri> <LocalPath> or <S3Uri> <S3Uri>\n")
++        sys.exit(252)
++    src, dst = paths
++    client = S3Client()
++
++    src_s3 = is_s3(src)
++    dst_s3 = is_s3(dst)
++
++    if not src_s3 and not dst_s3:
++        sys.stderr.write("usage: aws s3 cp <LocalPath> <S3Uri>\n"
++                         "Error: Invalid argument type\n")
++        return 2
++
++    try:
++        if args.recursive:
++            return cp_recursive(client, src, dst, src_s3, dst_s3, args)
++        if not src_s3 and dst_s3:
++            return upload(client, src, dst, args)
++        elif src_s3 and not dst_s3:
++            return download(client, src, dst, args)
++        else:
++            return copy(client, src, dst, args)
++    except ClientError as e:
++        return handle_transfer_error(src, dst, src_s3, dst_s3, e)
++
++
++def resolve_dst_key(dst, src_name):
++    b, k = find_bucket_key(dst)
++    if k == '' or k.endswith('/'):
++        return b, k + src_name
++    return b, k
++
++
++def upload(client, src, dst, args, print_line=True):
++    if src == '-':
++        body = sys.stdin.buffer.read()
++        b, k = find_bucket_key(dst)
++        if k == '' or k.endswith('/'):
++            sys.stderr.write("Error: destination must be a full key for stream\n")
++            return 1
++        if args.dryrun:
++            print("(dryrun) upload: - to s3://%s/%s" % (b, k))
++            return 0
++        put_object(client, b, k, body)
++        return 0
++    name = os.path.basename(src.rstrip('/'))
++    b, k = resolve_dst_key(dst, name)
++    if args.dryrun:
++        print("(dryrun) upload: %s to s3://%s/%s" % (src, b, k))
++        return 0
++    if not os.path.isfile(src):
++        sys.stderr.write("upload failed: %s The user-provided path %s does "
++                         "not exist.\n" % (src, src))
++        return 1
++    with open(src, 'rb') as f:
++        body = f.read()
++    put_object(client, b, k, body)
++    if print_line and not args.quiet and not args.only_show_errors:
++        print("upload: %s to s3://%s/%s" % (src, b, k))
++    return 0
++
++
++def download(client, src, dst, args, print_line=True):
++    b, k = find_bucket_key(src)
++    if dst == '-':
++        if args.dryrun:
++            return 0
++        data = get_object(client, b, k)
++        sys.stdout.buffer.write(data)
++        return 0
++    outpath = dst
++    if os.path.isdir(dst) or dst.endswith('/'):
++        outpath = os.path.join(dst, os.path.basename(k))
++    if args.dryrun:
++        print("(dryrun) download: s3://%s/%s to %s" % (b, k, outpath))
++        return 0
++    data = get_object(client, b, k)
++    d = os.path.dirname(outpath)
++    if d and not os.path.exists(d):
++        os.makedirs(d, exist_ok=True)
++    with open(outpath, 'wb') as f:
++        f.write(data)
++    if print_line and not args.quiet and not args.only_show_errors:
++        print("download: s3://%s/%s to %s" % (b, k, outpath))
++    return 0
++
++
++def copy(client, src, dst, args, print_line=True):
++    sb, sk = find_bucket_key(src)
++    db, dk = resolve_dst_key(dst, os.path.basename(sk))
++    if args.dryrun:
++        print("(dryrun) copy: s3://%s/%s to s3://%s/%s" % (sb, sk, db, dk))
++        return 0
++    headers = {'x-amz-copy-source': '/%s/%s' % (sb, urllib.parse.quote(sk))}
++    client.request('PUT', db, dk, headers=headers)
++    if print_line and not args.quiet and not args.only_show_errors:
++        print("copy: s3://%s/%s to s3://%s/%s" % (sb, sk, db, dk))
++    return 0
++
++
++def cp_recursive(client, src, dst, src_s3, dst_s3, args):
++    if not src_s3 and dst_s3:
++        b, prefix = find_bucket_key(dst)
++        base = src.rstrip('/')
++        for root, _, files in os.walk(base):
++            for fn in files:
++                full = os.path.join(root, fn)
++                rel = os.path.relpath(full, base)
++                key = (prefix + rel).replace(os.sep, '/')
++                if args.dryrun:
++                    print("(dryrun) upload: %s to s3://%s/%s" % (full, b, key))
++                else:
++                    with open(full, 'rb') as f:
++                        put_object(client, b, key, f.read())
++                    if not args.quiet and not args.only_show_errors:
++                        print("upload: %s to s3://%s/%s" % (full, b, key))
++        return 0
++    elif src_s3 and not dst_s3:
++        b, prefix = find_bucket_key(src)
++        contents, _ = list_objects_v2(client, b, prefix)
++        for item in contents:
++            key = item['Key']
++            rel = key[len(prefix):] if prefix else key
++            out = os.path.join(dst, rel)
++            if args.dryrun:
++                print("(dryrun) download: s3://%s/%s to %s" % (b, key, out))
++            else:
++                data = get_object(client, b, key)
++                d = os.path.dirname(out)
++                if d and not os.path.exists(d):
++                    os.makedirs(d, exist_ok=True)
++                with open(out, 'wb') as f:
++                    f.write(data)
++                if not args.quiet and not args.only_show_errors:
++                    print("download: s3://%s/%s to %s" % (b, key, out))
++        return 0
++    else:
++        sb, sprefix = find_bucket_key(src)
++        db, dprefix = find_bucket_key(dst)
++        contents, _ = list_objects_v2(client, sb, sprefix)
++        for item in contents:
++            key = item['Key']
++            rel = key[len(sprefix):] if sprefix else key
++            dk = dprefix + rel
++            if args.dryrun:
++                print("(dryrun) copy: s3://%s/%s to s3://%s/%s" % (sb, key, db, dk))
++            else:
++                headers = {'x-amz-copy-source': '/%s/%s' % (sb, urllib.parse.quote(key))}
++                client.request('PUT', db, dk, headers=headers)
++                if not args.quiet and not args.only_show_errors:
++                    print("copy: s3://%s/%s to s3://%s/%s" % (sb, key, db, dk))
++        return 0
++
++
++def handle_transfer_error(src, dst, src_s3, dst_s3, e):
++    detail = e.aws_str()
++    if not src_s3 and dst_s3:
++        sys.stderr.write("upload failed: %s to %s %s\n" % (src, dst, detail))
++    elif src_s3 and not dst_s3:
++        sys.stderr.write("download failed: %s to %s %s\n" % (src, dst, detail))
++    else:
++        sys.stderr.write("copy failed: %s to %s %s\n" % (src, dst, detail))
++    return 1
++
++
++# ------------------- mv -------------------
++
++def cmd_mv(argv):
++    args = parse_transfer('aws s3 mv', argv)
++    paths = args.paths
++    if len(paths) != 2:
++        sys.stderr.write("usage: aws s3 mv <LocalPath> <S3Uri> or "
++                         "<S3Uri> <LocalPath> or <S3Uri> <S3Uri>\n")
++        sys.exit(252)
++    src, dst = paths
++    src_s3 = is_s3(src)
++    dst_s3 = is_s3(dst)
++
++    if src_s3 and dst_s3:
++        sb, sk = find_bucket_key(src)
++        db, dk = find_bucket_key(dst)
++        rdb, rdk = resolve_dst_key(dst, os.path.basename(sk))
++        if sb == rdb and sk == rdk:
++            sys.stderr.write("Cannot mv a file onto itself.\n")
++            sys.exit(252)
++
++    if not src_s3 and not dst_s3:
++        sys.stderr.write("usage: aws s3 mv <LocalPath> <S3Uri>\n"
++                         "Error: Invalid argument type\n")
++        return 2
++
++    client = S3Client()
++    try:
++        if args.recursive:
++            rc = mv_recursive(client, src, dst, src_s3, dst_s3, args)
++            return rc
++        if not src_s3 and dst_s3:
++            name = os.path.basename(src.rstrip('/'))
++            b, k = resolve_dst_key(dst, name)
++            if args.dryrun:
++                print("(dryrun) move: %s to s3://%s/%s" % (src, b, k))
++                return 0
++            with open(src, 'rb') as f:
++                put_object(client, b, k, f.read(), transfer_headers(args))
++            os.remove(src)
++            if not args.quiet and not args.only_show_errors:
++                print("move: %s to s3://%s/%s" % (src, b, k))
++            return 0
++        elif src_s3 and not dst_s3:
++            b, k = find_bucket_key(src)
++            out = dst
++            if os.path.isdir(dst) or dst.endswith('/'):
++                out = os.path.join(dst, os.path.basename(k))
++            if args.dryrun:
++                print("(dryrun) move: s3://%s/%s to %s" % (b, k, out))
++                return 0
++            data = get_object(client, b, k)
++            d = os.path.dirname(out)
++            if d and not os.path.exists(d):
++                os.makedirs(d, exist_ok=True)
++            with open(out, 'wb') as f:
++                f.write(data)
++            delete_object(client, b, k)
++            if not args.quiet and not args.only_show_errors:
++                print("move: s3://%s/%s to %s" % (b, k, out))
++            return 0
++        else:
++            sb, sk = find_bucket_key(src)
++            db, dk = resolve_dst_key(dst, os.path.basename(sk))
++            if args.dryrun:
++                print("(dryrun) move: s3://%s/%s to s3://%s/%s" % (sb, sk, db, dk))
++                return 0
++            headers = {'x-amz-copy-source': '/%s/%s' % (sb, urllib.parse.quote(sk))}
++            client.request('PUT', db, dk, headers=headers)
++            delete_object(client, sb, sk)
++            if not args.quiet and not args.only_show_errors:
++                print("move: s3://%s/%s to s3://%s/%s" % (sb, sk, db, dk))
++            return 0
++    except ClientError as e:
++        detail = e.aws_str()
++        sys.stderr.write("move failed: %s to %s %s\n" % (src, dst, detail))
++        return 1
++
++
++def mv_recursive(client, src, dst, src_s3, dst_s3, args):
++    if not src_s3 and dst_s3:
++        b, prefix = find_bucket_key(dst)
++        base = src.rstrip('/')
++        for root, _, files in os.walk(base):
++            for fn in files:
++                full = os.path.join(root, fn)
++                rel = os.path.relpath(full, base)
++                key = (prefix + rel).replace(os.sep, '/')
++                if args.dryrun:
++                    print("(dryrun) move: %s to s3://%s/%s" % (full, b, key))
++                else:
++                    with open(full, 'rb') as f:
++                        put_object(client, b, key, f.read())
++                    os.remove(full)
++                    if not args.quiet and not args.only_show_errors:
++                        print("move: %s to s3://%s/%s" % (full, b, key))
++        return 0
++    elif src_s3 and not dst_s3:
++        b, prefix = find_bucket_key(src)
++        contents, _ = list_objects_v2(client, b, prefix)
++        for item in contents:
++            key = item['Key']
++            rel = key[len(prefix):] if prefix else key
++            out = os.path.join(dst, rel)
++            if args.dryrun:
++                print("(dryrun) move: s3://%s/%s to %s" % (b, key, out))
++            else:
++                data = get_object(client, b, key)
++                d = os.path.dirname(out)
++                if d and not os.path.exists(d):
++                    os.makedirs(d, exist_ok=True)
++                with open(out, 'wb') as f:
++                    f.write(data)
++                delete_object(client, b, key)
++                if not args.quiet and not args.only_show_errors:
++                    print("move: s3://%s/%s to %s" % (b, key, out))
++        return 0
++    else:
++        sb, sprefix = find_bucket_key(src)
++        db, dprefix = find_bucket_key(dst)
++        contents, _ = list_objects_v2(client, sb, sprefix)
++        for item in contents:
++            key = item['Key']
++            rel = key[len(sprefix):] if sprefix else key
++            dk = dprefix + rel
++            if args.dryrun:
++                print("(dryrun) move: s3://%s/%s to s3://%s/%s" % (sb, key, db, dk))
++            else:
++                headers = {'x-amz-copy-source': '/%s/%s' % (sb, urllib.parse.quote(key))}
++                client.request('PUT', db, dk, headers=headers)
++                delete_object(client, sb, key)
++                if not args.quiet and not args.only_show_errors:
++                    print("move: s3://%s/%s to s3://%s/%s" % (sb, key, db, dk))
++        return 0
++
++
++# ------------------- rb -------------------
++
++def cmd_rb(argv):
++    import argparse
++    parser = argparse.ArgumentParser(prog='aws s3 rb', add_help=False)
++    parser.add_argument('path')
++    parser.add_argument('--force', action='store_true')
++    for f in ['--region', '--endpoint-url', '--profile', '--output',
++              '--query', '--color']:
++        parser.add_argument(f, nargs='?', default=None)
++    try:
++        args, unknown = parser.parse_known_args(argv)
++    except SystemExit:
++        sys.exit(252)
++    for u in unknown:
++        if u.startswith('--'):
++            sys.stderr.write("Unknown options: %s\n" % u)
++            sys.exit(252)
++
++    if not args.path.startswith('s3://'):
++        sys.stderr.write("usage: aws s3 rb <S3Uri>\n"
++                         "Error: Invalid argument type\n")
++        sys.exit(252)
++    bucket, key = find_bucket_key(args.path)
++    if key:
++        sys.stderr.write("Please specify a valid bucket name only. "
++                         "E.g. s3://%s\n" % bucket)
++        return 1
++
++    client = S3Client()
++
++    if args.force:
++        try:
++            contents, _ = list_objects_v2(client, bucket, '')
++        except ClientError as e:
++            sys.stderr.write(e.aws_str() + "\n")
++            return 255
++        for item in contents:
++            try:
++                delete_object(client, bucket, item['Key'])
++                print("delete: s3://%s/%s" % (bucket, item['Key']))
++            except ClientError as e:
++                sys.stderr.write("delete failed: s3://%s/%s %s\n"
++                                 % (bucket, item['Key'], e.aws_str()))
++                return 255
++
++    try:
++        delete_bucket(client, bucket)
++        print("remove_bucket: %s" % bucket)
++        return 0
++    except ClientError as e:
++        sys.stderr.write("remove_bucket failed: %s %s\n"
++                         % (args.path, e.aws_str()))
++        return 1
++
++
++# ------------------- sync -------------------
++
++def cmd_sync(argv):
++    args = parse_transfer('aws s3 sync', argv)
++    paths = args.paths
++    if args.recursive:
++        sys.stderr.write("Unknown options: --recursive\n")
++        sys.exit(252)
++    if len(paths) != 2:
++        sys.stderr.write("usage: aws s3 sync <LocalPath> <S3Uri> or "
++                         "<S3Uri> <LocalPath> or <S3Uri> <S3Uri>\n")
++        sys.exit(252)
++    src, dst = paths
++    src_s3 = is_s3(src)
++    dst_s3 = is_s3(dst)
++
++    if not src_s3 and not dst_s3:
++        sys.stderr.write("usage: aws s3 sync <LocalPath> <S3Uri>\n"
++                         "Error: Invalid argument type\n")
++        return 2
++
++    client = S3Client()
++    try:
++        if not src_s3 and dst_s3:
++            return sync_up(client, src, dst, args)
++        elif src_s3 and not dst_s3:
++            return sync_down(client, src, dst, args)
++        else:
++            return sync_s3s3(client, src, dst, args)
++    except ClientError as e:
++        sys.stderr.write("\n" + e.aws_str() + "\n")
++        return 255
++
++
++def parse_ts(ts):
++    if not ts:
++        return 0
++    try:
++        t = ts
++        if t.endswith('Z'):
++            t = t[:-1]
++        if '.' in t:
++            t = t.split('.')[0]
++        dt = datetime.datetime.strptime(t, '%Y-%m-%dT%H:%M:%S')
++        return dt.timestamp()
++    except Exception:
++        return 0
++
++
++def sync_up(client, src, dst, args):
++    b, prefix = find_bucket_key(dst)
++    if prefix and not prefix.endswith('/'):
++        prefix += '/'
++    contents, _ = list_objects_v2(client, b, prefix)
++    remote = {}
++    for item in contents:
++        rel = item['Key'][len(prefix):] if prefix else item['Key']
++        remote[rel] = (int(item.get('Size', '0')), parse_ts(item.get('LastModified')))
++    base = src.rstrip('/')
++    if not os.path.isdir(base):
++        sys.stderr.write("\nThe user-provided path %s does not exist.\n" % src)
++        return 255
++    for root, _, files in os.walk(base):
++        for fn in files:
++            full = os.path.join(root, fn)
++            rel = os.path.relpath(full, base).replace(os.sep, '/')
++            size = os.path.getsize(full)
++            mtime = os.path.getmtime(full)
++            need = True
++            if rel in remote:
++                rsize, rmtime = remote[rel]
++                if rsize == size and rmtime >= mtime:
++                    need = False
++            if need:
++                key = prefix + rel
++                if args.dryrun:
++                    print("(dryrun) upload: %s to s3://%s/%s" % (full, b, key))
++                else:
++                    with open(full, 'rb') as f:
++                        put_object(client, b, key, f.read(), transfer_headers(args))
++                    if not args.quiet and not args.only_show_errors:
++                        print("upload: %s to s3://%s/%s" % (full, b, key))
++    return 0
++
++
++def sync_down(client, src, dst, args):
++    b, prefix = find_bucket_key(src)
++    contents, _ = list_objects_v2(client, b, prefix)
++    for item in contents:
++        key = item['Key']
++        rel = key[len(prefix):] if prefix else key
++        out = os.path.join(dst, rel)
++        size = int(item.get('Size', '0'))
++        rmtime = parse_ts(item.get('LastModified'))
++        need = True
++        if os.path.isfile(out):
++            if os.path.getsize(out) == size and os.path.getmtime(out) >= rmtime:
++                need = False
++        if need:
++            if args.dryrun:
++                print("(dryrun) download: s3://%s/%s to %s" % (b, key, out))
++            else:
++                data = get_object(client, b, key)
++                d = os.path.dirname(out)
++                if d and not os.path.exists(d):
++                    os.makedirs(d, exist_ok=True)
++                with open(out, 'wb') as f:
++                    f.write(data)
++                if not args.quiet and not args.only_show_errors:
++                    print("download: s3://%s/%s to %s" % (b, key, out))
++    return 0
++
++
++def sync_s3s3(client, src, dst, args):
++    sb, sprefix = find_bucket_key(src)
++    db, dprefix = find_bucket_key(dst)
++    src_contents, _ = list_objects_v2(client, sb, sprefix)
++    dst_contents, _ = list_objects_v2(client, db, dprefix)
++    remote = {}
++    for item in dst_contents:
++        rel = item['Key'][len(dprefix):] if dprefix else item['Key']
++        remote[rel] = (int(item.get('Size', '0')), parse_ts(item.get('LastModified')))
++    for item in src_contents:
++        key = item['Key']
++        rel = key[len(sprefix):] if sprefix else key
++        size = int(item.get('Size', '0'))
++        mtime = parse_ts(item.get('LastModified'))
++        need = True
++        if rel in remote:
++            rsize, rmtime = remote[rel]
++            if rsize == size and rmtime >= mtime:
++                need = False
++        if need:
++            dk = dprefix + rel
++            if args.dryrun:
++                print("(dryrun) copy: s3://%s/%s to s3://%s/%s" % (sb, key, db, dk))
++            else:
++                headers = {'x-amz-copy-source': '/%s/%s' % (sb, urllib.parse.quote(key))}
++                client.request('PUT', db, dk, headers=headers)
++                if not args.quiet and not args.only_show_errors:
++                    print("copy: s3://%s/%s to s3://%s/%s" % (sb, key, db, dk))
++    return 0
++
++
++# ------------------- main -------------------
++
++def main():
++    argv = sys.argv
++    if len(argv) < 2:
++        sys.stderr.write("usage: aws <command> <subcommand> [parameters]\n")
++        return 2
++    if argv[1] != 's3':
++        sys.stderr.write("Invalid choice: '%s'\n" % argv[1])
++        return 2
++    if len(argv) < 3:
++        sys.stderr.write("usage: aws s3 <subcommand>\n")
++        return 2
++    sub = argv[2]
++    rest = argv[3:]
++    dispatch = {
++        'cp': cmd_cp,
++        'ls': cmd_ls,
++        'mv': cmd_mv,
++        'rb': cmd_rb,
++        'sync': cmd_sync,
++    }
++    if sub not in dispatch:
++        sys.stderr.write("Invalid choice: '%s'\n" % sub)
++        return 2
++    try:
++        return dispatch[sub](rest)
++    except ClientError as e:
++        sys.stderr.write(e.aws_str() + "\n")
++        return 1
++
++
++if __name__ == '__main__':
++    try:
++        sys.exit(main())
++    except SystemExit:
++        raise
++    except BrokenPipeError:
++        sys.exit(0)
++    except Exception as e:
++        sys.stderr.write(str(e) + "\n")
++        sys.exit(1)

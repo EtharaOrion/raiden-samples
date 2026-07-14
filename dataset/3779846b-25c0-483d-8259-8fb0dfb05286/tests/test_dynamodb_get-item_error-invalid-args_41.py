@@ -1,0 +1,11 @@
+from _ddb_http import to_item, from_item, to_av, from_av
+
+
+def test_get_item_nonexistent_table_error(cli, ddb_client):
+    result = cli(
+        "dynamodb", "get-item",
+        "--table-name", "NoSuchTable_" + "x" * 20,
+        "--key", '{"pk":{"S":"abc"}}',
+    )
+    assert result.returncode != 0
+    assert "ResourceNotFoundException" in result.stderr

@@ -1,0 +1,272 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,266 @@
++import sys
++import os
++import json
++import urllib.request
++import urllib.error
++import base64
++
++USAGE_EXIT = 252
++SERVICE_EXIT = 254
++
++# subcommand -> spec of flags
++# each flag: name -> type where type in ('str','json','int','bool')
++SPECS = {
++    "delete-item": {
++        "condition-expression": "str",
++        "conditional-operator": "str",
++        "expected": "json",
++        "expression-attribute-names": "json",
++        "expression-attribute-values": "json",
++        "key": "json",
++        "return-consumed-capacity": "str",
++        "return-item-collection-metrics": "str",
++        "return-values": "str",
++        "return-values-on-condition-check-failure": "str",
++        "table-name": "str",
++    },
++    "delete-table": {
++        "table-name": "str",
++    },
++    "get-item": {
++        "attributes-to-get": "json",
++        "consistent-read": "bool",
++        "expression-attribute-names": "json",
++        "key": "json",
++        "projection-expression": "str",
++        "return-consumed-capacity": "str",
++        "table-name": "str",
++    },
++    "list-tables": {
++        "exclusive-start-table-name": "str",
++        "limit": "int",
++    },
++    "put-item": {
++        "condition-expression": "str",
++        "conditional-operator": "str",
++        "expected": "json",
++        "expression-attribute-names": "json",
++        "expression-attribute-values": "json",
++        "item": "json",
++        "return-consumed-capacity": "str",
++        "return-item-collection-metrics": "str",
++        "return-values": "str",
++        "return-values-on-condition-check-failure": "str",
++        "table-name": "str",
++    },
++    "query": {
++        "attributes-to-get": "json",
++        "conditional-operator": "str",
++        "consistent-read": "bool",
++        "exclusive-start-key": "json",
++        "expression-attribute-names": "json",
++        "expression-attribute-values": "json",
++        "filter-expression": "str",
++        "index-name": "str",
++        "key-condition-expression": "str",
++        "key-conditions": "json",
++        "limit": "int",
++        "projection-expression": "str",
++        "query-filter": "json",
++        "return-consumed-capacity": "str",
++        "scan-index-forward": "bool",
++        "select": "str",
++        "table-name": "str",
++    },
++    "update-item": {
++        "attribute-updates": "json",
++        "condition-expression": "str",
++        "conditional-operator": "str",
++        "expected": "json",
++        "expression-attribute-names": "json",
++        "expression-attribute-values": "json",
++        "key": "json",
++        "return-consumed-capacity": "str",
++        "return-item-collection-metrics": "str",
++        "return-values": "str",
++        "return-values-on-condition-check-failure": "str",
++        "table-name": "str",
++        "update-expression": "str",
++    },
++}
++
++# subcommand -> DynamoDB operation
++OPS = {
++    "delete-item": "DeleteItem",
++    "delete-table": "DeleteTable",
++    "get-item": "GetItem",
++    "list-tables": "ListTables",
++    "put-item": "PutItem",
++    "query": "Query",
++    "update-item": "UpdateItem",
++}
++
++# consistent-read and scan-index-forward: bool flags. scan-index-forward can be
++# --scan-index-forward or --no-scan-index-forward. consistent-read likewise.
++BOOL_FLAGS = {"consistent-read", "scan-index-forward"}
++
++
++def to_pascal(name):
++    return "".join(p.capitalize() for p in name.split("-"))
++
++
++def usage_error(msg):
++    sys.stderr.write(str(msg) + "\n")
++    sys.exit(USAGE_EXIT)
++
++
++def parse_args(spec, argv):
++    result = {}
++    seen = set()
++    i = 0
++    n = len(argv)
++    while i < n:
++        tok = argv[i]
++        if not tok.startswith("--"):
++            usage_error("Unknown argument: " + tok)
++        raw = tok[2:]
++        # handle --no-<bool> forms
++        negated = False
++        flag = raw
++        if raw.startswith("no-"):
++            candidate = raw[3:]
++            if candidate in BOOL_FLAGS and candidate in spec:
++                negated = True
++                flag = candidate
++        if flag not in spec:
++            usage_error("Unknown option: --" + raw)
++        ftype = spec[flag]
++        if ftype == "bool":
++            result[flag] = (not negated)
++            seen_key = flag
++            if seen_key in seen:
++                usage_error("Duplicate option: --" + flag)
++            seen.add(seen_key)
++            i += 1
++            continue
++        # needs a value
++        if i + 1 >= n:
++            usage_error("Option --" + flag + " requires a value")
++        val = argv[i + 1]
++        if flag in seen:
++            usage_error("Duplicate option: --" + flag)
++        seen.add(flag)
++        if ftype == "json":
++            try:
++                parsed = json.loads(val)
++            except Exception:
++                usage_error("Invalid JSON for --" + flag)
++            result[flag] = parsed
++        elif ftype == "int":
++            try:
++                result[flag] = int(val)
++            except Exception:
++                usage_error("Invalid integer for --" + flag)
++        else:
++            if val == "":
++                usage_error("Empty value for --" + flag)
++            result[flag] = val
++        i += 2
++    return result
++
++
++def build_request(spec, parsed):
++    body = {}
++    for flag, val in parsed.items():
++        field = to_pascal(flag)
++        body[field] = val
++    return body
++
++
++def call_dynamo(op, body):
++    endpoint = os.environ.get("AWS_ENDPOINT_URL_DYNAMODB") or os.environ["AWS_ENDPOINT_URL"]
++    data = json.dumps(body).encode("utf-8")
++    req = urllib.request.Request(
++        endpoint,
++        data=data,
++        method="POST",
++    )
++    req.add_header("Content-Type", "application/x-amz-json-1.0")
++    req.add_header("X-Amz-Target", "DynamoDB_20120810." + op)
++    req.add_header(
++        "Authorization",
++        "AWS4-HMAC-SHA256 Credential=dummy/20200101/us-east-1/dynamodb/aws4_request, "
++        "SignedHeaders=content-type;host;x-amz-target, Signature=dummy",
++    )
++    req.add_header("X-Amz-Date", "20200101T000000Z")
++    try:
++        resp = urllib.request.urlopen(req)
++        raw = resp.read()
++        return 0, raw
++    except urllib.error.HTTPError as e:
++        raw = e.read()
++        return 1, raw
++    except Exception as e:
++        sys.stderr.write(str(e) + "\n")
++        sys.exit(SERVICE_EXIT)
++
++
++def handle_service_error(raw):
++    msg = ""
++    code = "UnknownError"
++    try:
++        obj = json.loads(raw.decode("utf-8"))
++        t = obj.get("__type") or obj.get("code") or ""
++        if t:
++            code = t.split("#")[-1]
++        m = obj.get("message") or obj.get("Message") or ""
++        msg = m
++    except Exception:
++        msg = raw.decode("utf-8", "replace")
++    sys.stderr.write(code + ": " + msg + "\n")
++    sys.exit(SERVICE_EXIT)
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3:
++        usage_error("usage: main.py <prefix> <command> [args...]")
++    subcommand = argv[2]
++    if subcommand not in SPECS:
++        usage_error("Unknown command: " + subcommand)
++    spec = SPECS[subcommand]
++    rest = argv[3:]
++    parsed = parse_args(spec, rest)
++
++    # basic required-field checks matching botocore usage errors
++    if subcommand in ("delete-item", "get-item", "update-item"):
++        if "table-name" not in parsed:
++            usage_error("The following arguments are required: --table-name")
++        if "key" not in parsed:
++            usage_error("The following arguments are required: --key")
++    elif subcommand == "put-item":
++        if "table-name" not in parsed:
++            usage_error("The following arguments are required: --table-name")
++        if "item" not in parsed:
++            usage_error("The following arguments are required: --item")
++    elif subcommand in ("delete-table", "query"):
++        if "table-name" not in parsed:
++            usage_error("The following arguments are required: --table-name")
++
++    body = build_request(spec, parsed)
++    op = OPS[subcommand]
++    status, raw = call_dynamo(op, body)
++    if status != 0:
++        handle_service_error(raw)
++    text = raw.decode("utf-8").strip()
++    if text:
++        try:
++            obj = json.loads(text)
++            sys.stdout.write(json.dumps(obj, indent=4) + "\n")
++        except Exception:
++            sys.stdout.write(text + "\n")
++    sys.exit(0)
++
++
++if __name__ == "__main__":
++    main()
