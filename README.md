@@ -35,11 +35,12 @@ in total, each scored by the same `test.sh` verifier the training consumer uses.
 Tasks are stratified into three difficulty tiers (Easy, Medium, Hard), calibrated from observed
 Haiku reward on this sample, and cover 15 distinct AWS CLI commands across 2 service surfaces.
 
-The per-task reward gap between the two models grows sharply as task difficulty rises: Opus 4.8
-stays near the ceiling on every task while Haiku 4.5 spreads across the full `[0, 1]` range. See
-[Results](#results-reward-vs-model-capability) for the tier-level breakdown.
+Reward per dollar decays sharply as difficulty rises. Ranking each model by its own reward per
+dollar, even Opus 4.8 falls 66% from its best task to its worst and Haiku 4.5 falls 100%, so the
+hardest tasks return far less reward per dollar spent than the easy ones. See
+[Results](#results-reward-vs-model-capability) for the per-task reward breakdown.
 
-![Per-task reward for Opus 4.8 vs Haiku 4.5; sorted by Haiku reward ascending; longer dumbbell = more RL-training headroom](assets/opus_vs_haiku.png)
+![Cost-efficiency: reward per USD per task, ranked best to worst per model; Opus 4.8 down 66 percent, Haiku 4.5 down 100 percent](assets/fig1-cost-efficiency.png)
 
 > **This is a representative, quality-controlled sample of the full Raiden corpus,** provided for
 > evaluation. The task format ([Harbor 0.13.1](https://github.com/harbor-framework/harbor)),
@@ -75,12 +76,11 @@ is defined):
 ```
 raiden-samples/
 ├── README.md                 # this document
-├── LICENSE                   # MIT (Ethara.AI 2026)
 ├── assets/                   # figures
 │   ├── hero.png              # README banner
-│   ├── opus_vs_haiku.png     # per-task reward dumbbell chart (Opus vs Haiku, 20 tasks)
-│   ├── reward_by_tier.png    # per-tier mean reward bar chart (Easy / Medium / Hard)
-│   └── cost_by_tier.png      # per-tier mean agent cost per run bar chart (USD)
+│   ├── fig1-cost-efficiency.png  # reward per USD per task, ranked best to worst (Opus vs Haiku)
+│   ├── fig2a-s3-dumbbell.png     # S3 per-task reward dumbbell (Opus vs Haiku)
+│   └── fig2b-ddb-dumbbell.png    # DynamoDB per-task reward dumbbell (Opus vs Haiku)
 ├── dataset/                  # task definitions, one directory per UUID (20)
 │   └── <uuid>/ ...
 └── trajectories/             # model runs, one directory per UUID (20)
@@ -109,8 +109,6 @@ from the runs shipped here, so the tiers describe what a mid-tier model actually
 rather than any property fixed in advance.
 
 Thresholds (fixed): **Easy ≥ 0.75**, **Medium 0.50–0.75**, **Hard < 0.50**.
-
-![Mean reward by difficulty tier; Opus 4.8 stays near the ceiling while Haiku 4.5 spreads across the tiers](assets/reward_by_tier.png)
 
 | Tier       |   n | mean Haiku reward | mean Opus reward |
 | :--------- | --: | ----------------: | ---------------: |
@@ -153,11 +151,13 @@ implementation stays visible even when the strict `pass@1` (reward exactly 1.0) 
 With 20 tasks across three tiers, these are an average tendency on a small, curated sample rather
 than a precise law.
 
-In contrast, inference cost stays close to flat across tiers, with the Medium tier the priciest
-for both models; the harder tasks are not proportionally more expensive because the smaller
-model's rollouts fail fast and the stronger model saturates on iteration count regardless of tier.
+The per-task reward gap widens with difficulty: Opus 4.8 stays near the ceiling on every task
+while Haiku 4.5 spreads across the full `[0, 1]` range, so the corpus exercises genuinely costly
+work rather than cheap wins.
 
-![Mean agent cost per run by difficulty tier](assets/cost_by_tier.png)
+![S3 tasks: Opus 4.8 vs Haiku 4.5 per-task reward (dumbbell), sorted by Haiku reward, with HARD / MEDIUM / EASY difficulty bands](assets/fig2a-s3-dumbbell.png)
+
+![DynamoDB tasks: Opus 4.8 vs Haiku 4.5 per-task reward (dumbbell), sorted by Haiku reward](assets/fig2b-ddb-dumbbell.png)
 
 ## Analysis
 
@@ -435,8 +435,4 @@ This sample passed a QC gate prior to delivery:
   - **Model nondeterminism.** Even at `pass@1`, temperature and internal reasoning traces produce
     per-run variance not captured by a single trial.
 
-**Licensing.** MIT (see [`LICENSE`](./LICENSE), copyright Ethara.AI 2026). The MIT terms cover
-the contents of this repository (task specs, tests, reference solutions, harness code). The
-runtime containers are *built on* private base images and a third-party agent SDK
-(`Ethara-Ai/software-agent-sdk`); the MIT grant on this repository does not extend to those
-upstream artefacts.
+**Licensing.** Released under **CC BY-NC-ND 4.0** (Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International, copyright Ethara.AI 2026). The license covers the contents of this repository (task specs, tests, reference solutions, harness code): share with attribution for non-commercial use, no derivatives. The runtime containers are *built on* private base images and a third-party agent SDK (`Ethara-Ai/software-agent-sdk`); the CC BY-NC-ND grant on this repository does not extend to those upstream artefacts.
