@@ -1,0 +1,378 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,372 @@
++import sys
++import json
++import os
++import base64
++import urllib.request
++import urllib.error
++
++EXIT_USAGE = 252
++EXIT_ERROR = 254
++
++
++import datetime as _qc_dt
++
++_QC_TS_FIELDS = ['CreationDate', 'DeletionDate', 'LastUpdatedDate', 'NextRotationDate', 'OnDemandRotationStartDate', 'ParametersValidTo', 'RotationDate', 'ValidTo']
++
++
++def _isofix(o):
++    """Serialise AWS timestamp fields as ISO8601 strings, matching aws-cli v2."""
++    if isinstance(o, dict):
++        r = {}
++        for k, v in o.items():
++            if (k in _QC_TS_FIELDS and isinstance(v, (int, float))
++                    and not isinstance(v, bool)):
++                r[k] = _qc_dt.datetime.fromtimestamp(
++                    v, _qc_dt.timezone.utc).isoformat()
++            else:
++                r[k] = _isofix(v)
++        return r
++    if isinstance(o, list):
++        return [_isofix(x) for x in o]
++    return o
++
++def endpoint():
++    ep = os.environ.get("AWS_ENDPOINT_URL_KMS") or os.environ.get("AWS_ENDPOINT_URL")
++    if not ep:
++        ep = "http://localhost:4566"
++    return ep.rstrip("/")
++
++
++def call(op, params):
++    body = json.dumps(params).encode("utf-8")
++    req = urllib.request.Request(
++        endpoint() + "/",
++        data=body,
++        method="POST",
++    )
++    req.add_header("X-Amz-Target", "TrentService." + op)
++    req.add_header("Content-Type", "application/x-amz-json-1.1")
++    req.add_header("Authorization",
++                   "AWS4-HMAC-SHA256 Credential=dummy/20260101/us-east-1/kms/aws4_request, "
++                   "SignedHeaders=host;x-amz-date, Signature=dummy")
++    try:
++        resp = urllib.request.urlopen(req)
++        data = resp.read()
++        if data:
++            return json.loads(data.decode("utf-8")), None
++        return {}, None
++    except urllib.error.HTTPError as e:
++        data = e.read()
++        try:
++            err = json.loads(data.decode("utf-8"))
++        except Exception:
++            err = {"__type": "UnknownError", "message": data.decode("utf-8", "replace")}
++        return None, err
++    except Exception as e:
++        return None, {"__type": "ConnectionError", "message": str(e)}
++
++
++def usage_error(msg):
++    sys.stderr.write(str(msg) + "\n")
++    sys.exit(EXIT_USAGE)
++
++
++def service_error(err):
++    sys.stderr.write(json.dumps(err) + "\n")
++    sys.exit(EXIT_ERROR)
++
++
++def read_blob(val):
++    """aws-cli v2 default cli_binary_format=base64.
++    A bare value is already base64. fileb:// reads raw bytes and base64-encodes
++    them. file:// reads text and base64-encodes it."""
++    if val.startswith("fileb://"):
++        path = val[len("fileb://"):]
++        try:
++            with open(path, "rb") as f:
++                data = f.read()
++        except Exception as e:
++            usage_error("Unable to read file %s: %s" % (path, e))
++        return base64.b64encode(data).decode("ascii")
++    if val.startswith("file://"):
++        path = val[len("file://"):]
++        try:
++            with open(path, "rb") as f:
++                data = f.read()
++        except Exception as e:
++            usage_error("Unable to read file %s: %s" % (path, e))
++        return base64.b64encode(data).decode("ascii")
++    return val
++
++
++FLAG_MAP = {
++    "--key-id": ("KeyId", "str"),
++    "--description": ("Description", "str"),
++    "--key-usage": ("KeyUsage", "str"),
++    "--key-spec": ("KeySpec", "str"),
++    "--customer-master-key-spec": ("KeySpec", "str"),
++    "--alias-name": ("AliasName", "str"),
++    "--target-key-id": ("TargetKeyId", "str"),
++    "--number-of-bytes": ("NumberOfBytes", "int"),
++    "--pending-window-in-days": ("PendingWindowInDays", "int"),
++    "--plaintext": ("Plaintext", "blob"),
++    "--ciphertext-blob": ("CiphertextBlob", "blob"),
++    "--marker": ("Marker", "str"),
++    "--limit": ("Limit", "int"),
++    "--policy": ("Policy", "str"),
++    "--origin": ("Origin", "str"),
++    "--custom-key-store-id": ("CustomKeyStoreId", "str"),
++    "--bypass-policy-lockout-safety-check": ("BypassPolicyLockoutSafetyCheck", "bool"),
++    "--tags": ("Tags", "str"),
++    "--multi-region": ("MultiRegion", "bool"),
++    "--xks-key-id": ("XksKeyId", "str"),
++    "--encryption-algorithm": ("EncryptionAlgorithm", "str"),
++    "--encryption-context": ("EncryptionContext", "str"),
++    "--grant-tokens": ("GrantTokens", "str"),
++    "--dry-run": ("DryRun", "bool"),
++    "--recipient": ("Recipient", "str"),
++}
++
++
++def parse_args(args, allowed):
++    result = {}
++    i = 0
++    n = len(args)
++    while i < n:
++        a = args[i]
++        if not a.startswith("--"):
++            usage_error("Unknown argument: %s" % a)
++        if "=" in a:
++            flag, val = a.split("=", 1)
++            has_val = True
++        else:
++            flag = a
++            val = None
++            has_val = False
++        if flag not in allowed:
++            usage_error("Unknown options: %s" % flag)
++        if not has_val:
++            if i + 1 >= n:
++                usage_error("Missing value for %s" % flag)
++            val = args[i + 1]
++            i += 2
++        else:
++            i += 1
++        result[flag] = val
++    return result
++
++
++def require(parsed, flag):
++    if flag not in parsed:
++        usage_error("Missing required parameter: %s" % flag)
++
++
++def out(obj):
++    sys.stdout.write(json.dumps(_isofix(obj), indent=4) + "\n")
++
++
++def cmd_create_key(args):
++    allowed = {"--policy", "--description", "--key-usage", "--customer-master-key-spec",
++               "--key-spec", "--origin", "--custom-key-store-id",
++               "--bypass-policy-lockout-safety-check", "--tags", "--multi-region",
++               "--xks-key-id"}
++    parsed = parse_args(args, allowed)
++    params = {}
++    if "--description" in parsed:
++        params["Description"] = parsed["--description"]
++    if "--key-usage" in parsed:
++        params["KeyUsage"] = parsed["--key-usage"]
++    if "--key-spec" in parsed:
++        params["KeySpec"] = parsed["--key-spec"]
++    if "--customer-master-key-spec" in parsed:
++        params["KeySpec"] = parsed["--customer-master-key-spec"]
++    resp, err = call("CreateKey", params)
++    if err:
++        service_error(err)
++    out(resp)
++
++
++def cmd_describe_key(args):
++    allowed = {"--key-id", "--grant-tokens"}
++    parsed = parse_args(args, allowed)
++    require(parsed, "--key-id")
++    params = {"KeyId": parsed["--key-id"]}
++    resp, err = call("DescribeKey", params)
++    if err:
++        service_error(err)
++    out(resp)
++
++
++def cmd_list_keys(args):
++    allowed = {"--limit", "--marker"}
++    parsed = parse_args(args, allowed)
++    params = {}
++    if "--limit" in parsed:
++        try:
++            params["Limit"] = int(parsed["--limit"])
++        except ValueError:
++            usage_error("invalid limit")
++    if "--marker" in parsed:
++        params["Marker"] = parsed["--marker"]
++    resp, err = call("ListKeys", params)
++    if err:
++        service_error(err)
++    out(resp)
++
++
++def cmd_encrypt(args):
++    allowed = {"--key-id", "--plaintext", "--encryption-context", "--grant-tokens",
++               "--encryption-algorithm", "--dry-run"}
++    parsed = parse_args(args, allowed)
++    require(parsed, "--key-id")
++    if "--plaintext" not in parsed:
++        usage_error("Missing required parameter: --plaintext")
++    params = {"KeyId": parsed["--key-id"], "Plaintext": read_blob(parsed["--plaintext"])}
++    if "--encryption-algorithm" in parsed:
++        params["EncryptionAlgorithm"] = parsed["--encryption-algorithm"]
++    resp, err = call("Encrypt", params)
++    if err:
++        service_error(err)
++    out(resp)
++
++
++def cmd_decrypt(args):
++    allowed = {"--ciphertext-blob", "--encryption-context", "--grant-tokens",
++               "--key-id", "--encryption-algorithm", "--recipient", "--dry-run"}
++    parsed = parse_args(args, allowed)
++    if "--ciphertext-blob" not in parsed:
++        usage_error("Missing required parameter: --ciphertext-blob")
++    params = {"CiphertextBlob": read_blob(parsed["--ciphertext-blob"])}
++    if "--key-id" in parsed:
++        params["KeyId"] = parsed["--key-id"]
++    if "--encryption-algorithm" in parsed:
++        params["EncryptionAlgorithm"] = parsed["--encryption-algorithm"]
++    resp, err = call("Decrypt", params)
++    if err:
++        service_error(err)
++    out(resp)
++
++
++def cmd_generate_data_key(args):
++    allowed = {"--key-id", "--encryption-context", "--number-of-bytes", "--key-spec",
++               "--grant-tokens", "--recipient", "--dry-run"}
++    parsed = parse_args(args, allowed)
++    require(parsed, "--key-id")
++    params = {"KeyId": parsed["--key-id"]}
++    if "--number-of-bytes" in parsed:
++        try:
++            params["NumberOfBytes"] = int(parsed["--number-of-bytes"])
++        except ValueError:
++            usage_error("invalid number-of-bytes")
++    if "--key-spec" in parsed:
++        params["KeySpec"] = parsed["--key-spec"]
++    resp, err = call("GenerateDataKey", params)
++    if err:
++        service_error(err)
++    out(resp)
++
++
++def cmd_create_alias(args):
++    allowed = {"--alias-name", "--target-key-id"}
++    parsed = parse_args(args, allowed)
++    require(parsed, "--alias-name")
++    require(parsed, "--target-key-id")
++    params = {"AliasName": parsed["--alias-name"], "TargetKeyId": parsed["--target-key-id"]}
++    resp, err = call("CreateAlias", params)
++    if err:
++        service_error(err)
++    if resp:
++        out(resp)
++
++
++def cmd_list_aliases(args):
++    allowed = {"--key-id", "--limit", "--marker"}
++    parsed = parse_args(args, allowed)
++    params = {}
++    if "--key-id" in parsed:
++        params["KeyId"] = parsed["--key-id"]
++    if "--limit" in parsed:
++        try:
++            params["Limit"] = int(parsed["--limit"])
++        except ValueError:
++            usage_error("invalid limit")
++    if "--marker" in parsed:
++        params["Marker"] = parsed["--marker"]
++    resp, err = call("ListAliases", params)
++    if err:
++        service_error(err)
++    out(resp)
++
++
++def cmd_schedule_key_deletion(args):
++    allowed = {"--key-id", "--pending-window-in-days"}
++    parsed = parse_args(args, allowed)
++    require(parsed, "--key-id")
++    params = {"KeyId": parsed["--key-id"]}
++    if "--pending-window-in-days" in parsed:
++        try:
++            params["PendingWindowInDays"] = int(parsed["--pending-window-in-days"])
++        except ValueError:
++            usage_error("invalid pending-window-in-days")
++    resp, err = call("ScheduleKeyDeletion", params)
++    if err:
++        service_error(err)
++    if resp:
++        out(resp)
++
++
++def cmd_disable_key(args):
++    allowed = {"--key-id"}
++    parsed = parse_args(args, allowed)
++    require(parsed, "--key-id")
++    params = {"KeyId": parsed["--key-id"]}
++    resp, err = call("DisableKey", params)
++    if err:
++        service_error(err)
++    if resp:
++        out(resp)
++
++
++def cmd_enable_key(args):
++    allowed = {"--key-id"}
++    parsed = parse_args(args, allowed)
++    require(parsed, "--key-id")
++    params = {"KeyId": parsed["--key-id"]}
++    resp, err = call("EnableKey", params)
++    if err:
++        service_error(err)
++    if resp:
++        out(resp)
++
++
++DISPATCH = {
++    "create-key": cmd_create_key,
++    "describe-key": cmd_describe_key,
++    "list-keys": cmd_list_keys,
++    "encrypt": cmd_encrypt,
++    "decrypt": cmd_decrypt,
++    "generate-data-key": cmd_generate_data_key,
++    "create-alias": cmd_create_alias,
++    "list-aliases": cmd_list_aliases,
++    "schedule-key-deletion": cmd_schedule_key_deletion,
++    "disable-key": cmd_disable_key,
++    "enable-key": cmd_enable_key,
++}
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3:
++        usage_error("usage: main.py kms <command> [args...]")
++    service = argv[1]
++    if service != "kms":
++        usage_error("unknown service: %s" % service)
++    sub = argv[2]
++    handler = DISPATCH.get(sub)
++    if handler is None:
++        usage_error("unknown command: %s" % sub)
++    handler(argv[3:])
++
++
++if __name__ == "__main__":
++    main()

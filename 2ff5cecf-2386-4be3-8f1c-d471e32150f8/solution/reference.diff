@@ -1,0 +1,210 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,204 @@
++import sys
++import os
++import json
++import base64
++import urllib.request
++import urllib.error
++
++API_VERSION = "DynamoDB_20120810"
++
++
++def get_endpoint():
++    ep = os.environ.get("AWS_ENDPOINT_URL_DYNAMODB") or os.environ.get("AWS_ENDPOINT_URL")
++    if not ep:
++        raise KeyError("AWS_ENDPOINT_URL")
++    return ep
++
++
++def call(op, payload):
++    endpoint = get_endpoint()
++    data = json.dumps(payload).encode("utf-8")
++    req = urllib.request.Request(endpoint, data=data)
++    req.add_header("Content-Type", "application/x-amz-json-1.0")
++    req.add_header("X-Amz-Target", API_VERSION + "." + op)
++    req.add_header(
++        "Authorization",
++        "AWS4-HMAC-SHA256 Credential=dummy/20200101/us-east-1/dynamodb/aws4_request, "
++        "SignedHeaders=host;x-amz-date;x-amz-target, Signature=dummy",
++    )
++    req.add_header("X-Amz-Date", "20200101T000000Z")
++    try:
++        resp = urllib.request.urlopen(req)
++        body = resp.read().decode("utf-8")
++        if body:
++            return json.loads(body)
++        return {}
++    except urllib.error.HTTPError as e:
++        body = e.read().decode("utf-8")
++        try:
++            err = json.loads(body)
++        except Exception:
++            err = {"__type": "UnknownError", "message": body}
++        code = err.get("__type", "UnknownError")
++        if "#" in code:
++            code = code.split("#", 1)[1]
++        msg = err.get("message") or err.get("Message") or ""
++        raise ServiceError(code, msg)
++
++
++class ServiceError(Exception):
++    def __init__(self, code, message):
++        self.code = code
++        self.message = message
++        super().__init__(code)
++
++
++class UsageError(Exception):
++    pass
++
++
++# Map subcommand -> list of allowed flags, and how to marshal each.
++# type: "str", "int", "json", "bool"
++SPECS = {
++    "list-tables": {
++        "op": "ListTables",
++        "flags": {
++            "--exclusive-start-table-name": ("ExclusiveStartTableName", "str"),
++            "--limit": ("Limit", "int"),
++        },
++    },
++    "delete-table": {
++        "op": "DeleteTable",
++        "flags": {
++            "--table-name": ("TableName", "str"),
++        },
++    },
++    "get-item": {
++        "op": "GetItem",
++        "flags": {
++            "--attributes-to-get": ("AttributesToGet", "json"),
++            "--consistent-read": ("ConsistentRead", "bool"),
++            "--no-consistent-read": ("ConsistentRead", "boolfalse"),
++            "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++            "--key": ("Key", "json"),
++            "--projection-expression": ("ProjectionExpression", "str"),
++            "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++            "--table-name": ("TableName", "str"),
++        },
++    },
++    "update-item": {
++        "op": "UpdateItem",
++        "flags": {
++            "--attribute-updates": ("AttributeUpdates", "json"),
++            "--condition-expression": ("ConditionExpression", "str"),
++            "--conditional-operator": ("ConditionalOperator", "str"),
++            "--expected": ("Expected", "json"),
++            "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++            "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++            "--key": ("Key", "json"),
++            "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++            "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++            "--return-values": ("ReturnValues", "str"),
++            "--return-values-on-condition-check-failure": (
++                "ReturnValuesOnConditionCheckFailure",
++                "str",
++            ),
++            "--table-name": ("TableName", "str"),
++            "--update-expression": ("UpdateExpression", "str"),
++        },
++    },
++}
++
++
++def parse_args(spec, argv):
++    flags = spec["flags"]
++    payload = {}
++    seen = set()
++    i = 0
++    n = len(argv)
++    while i < n:
++        tok = argv[i]
++        if not tok.startswith("--"):
++            raise UsageError("Unknown argument: " + tok)
++        if tok not in flags:
++            raise UsageError("Unknown option: " + tok)
++        field, ftype = flags[tok]
++        if ftype in ("bool", "boolfalse"):
++            if field in seen:
++                raise UsageError("Duplicate option: " + tok)
++            seen.add(field)
++            payload[field] = ftype == "bool"
++            i += 1
++            continue
++        if i + 1 >= n:
++            raise UsageError("Option " + tok + " requires a value")
++        val = argv[i + 1]
++        if field in seen:
++            raise UsageError("Duplicate option: " + tok)
++        seen.add(field)
++        if val == "":
++            raise UsageError("Option " + tok + " requires a non-empty value")
++        if ftype == "str":
++            payload[field] = val
++        elif ftype == "int":
++            try:
++                payload[field] = int(val)
++            except ValueError:
++                raise UsageError("Option " + tok + " requires an integer")
++        elif ftype == "json":
++            try:
++                payload[field] = json.loads(val)
++            except Exception:
++                raise UsageError("Option " + tok + " requires valid JSON")
++        i += 2
++    return payload
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3:
++        sys.stderr.write("usage: prefix command [args]\n")
++        return 252
++    subcmd = argv[2]
++    if subcmd not in SPECS:
++        sys.stderr.write("Unknown command: " + subcmd + "\n")
++        return 252
++    spec = SPECS[subcmd]
++    try:
++        payload = parse_args(spec, argv[3:])
++    except UsageError as e:
++        sys.stderr.write(str(e) + "\n")
++        return 252
++
++    # required flags check
++    if subcmd == "delete-table":
++        if "TableName" not in payload:
++            sys.stderr.write("Missing required parameter: --table-name\n")
++            return 252
++    if subcmd in ("get-item", "update-item"):
++        if "TableName" not in payload:
++            sys.stderr.write("Missing required parameter: --table-name\n")
++            return 252
++        if "Key" not in payload:
++            sys.stderr.write("Missing required parameter: --key\n")
++            return 252
++
++    try:
++        result = call(spec["op"], payload)
++    except ServiceError as e:
++        sys.stderr.write(e.code)
++        if e.message:
++            sys.stderr.write(": " + e.message)
++        sys.stderr.write("\n")
++        return 254
++    except (KeyError,) as e:
++        sys.stderr.write("Endpoint not configured\n")
++        return 254
++
++    if result:
++        sys.stdout.write(json.dumps(result, indent=4) + "\n")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())

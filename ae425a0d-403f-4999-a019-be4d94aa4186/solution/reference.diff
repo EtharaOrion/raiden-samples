@@ -1,0 +1,570 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,564 @@
++import sys
++import os
++import json
++import urllib.request
++import urllib.error
++
++
++def eprint(*a):
++    print(*a, file=sys.stderr)
++
++
++def endpoint():
++    ep = os.environ.get("AWS_ENDPOINT_URL_KINESIS") or os.environ.get("AWS_ENDPOINT_URL")
++    if not ep:
++        ep = "http://localhost:4566"
++    return ep.rstrip("/")
++
++
++def call(op, body):
++    data = json.dumps(body).encode("utf-8")
++    req = urllib.request.Request(
++        endpoint() + "/",
++        data=data,
++        headers={
++            "Content-Type": "application/x-amz-json-1.1",
++            "X-Amz-Target": "Kinesis_20131202." + op,
++            "Authorization": "AWS4-HMAC-SHA256 Credential=dummy/20260101/us-east-1/kinesis/aws4_request, SignedHeaders=host;x-amz-date, Signature=dummy",
++            "X-Amz-Date": "20260101T000000Z",
++        },
++        method="POST",
++    )
++    try:
++        resp = urllib.request.urlopen(req)
++        raw = resp.read().decode("utf-8")
++        return 0, raw
++    except urllib.error.HTTPError as e:
++        try:
++            raw = e.read().decode("utf-8")
++        except Exception:
++            raw = ""
++        return 254, raw
++    except Exception as e:
++        eprint(str(e))
++        return 255, None
++
++
++def read_value(val):
++    if isinstance(val, str) and val.startswith("file://"):
++        path = val[len("file://"):]
++        try:
++            with open(path, "r") as f:
++                return f.read()
++        except Exception:
++            return val
++    return val
++
++
++def parse_args(argv, spec, multi_flags=None):
++    multi_flags = multi_flags or set()
++    params = {}
++    i = 0
++    n = len(argv)
++    while i < n:
++        a = argv[i]
++        if not a.startswith("--"):
++            return None, "unexpected argument: %s" % a
++        if a not in spec:
++            return None, "Unknown options: %s (ValidationException)" % a
++        kind, dest = spec[a]
++        if a in multi_flags:
++            i += 1
++            vals = []
++            while i < n and not argv[i].startswith("--"):
++                vals.append(argv[i])
++                i += 1
++            if not vals:
++                return None, "missing value for %s" % a
++            params[dest] = vals
++            continue
++        if i + 1 >= n:
++            return None, "missing value for %s" % a
++        val = argv[i + 1]
++        i += 2
++        if kind == "int":
++            try:
++                params[dest] = int(val)
++            except ValueError:
++                return None, "invalid int for %s" % a
++        elif kind == "json":
++            v = read_value(val)
++            try:
++                params[dest] = json.loads(v)
++            except Exception:
++                return None, "invalid json for %s" % a
++        elif kind == "rawfile":
++            params[dest] = read_value(val)
++        else:
++            params[dest] = val
++    return params, None
++
++
++def parse_tags_shorthand(val):
++    val = read_value(val)
++    try:
++        obj = json.loads(val)
++        if isinstance(obj, dict):
++            return obj
++    except Exception:
++        pass
++    tags = {}
++    for pair in val.split(","):
++        pair = pair.strip()
++        if not pair:
++            continue
++        if "=" in pair:
++            k, v = pair.split("=", 1)
++            tags[k] = v
++        else:
++            tags[pair] = ""
++    return tags
++
++
++def parse_tagkeys(vals):
++    keys = []
++    items = vals if isinstance(vals, list) else [vals]
++    for val in items:
++        val = read_value(val)
++        parsed = None
++        try:
++            obj = json.loads(val)
++            if isinstance(obj, list):
++                parsed = obj
++        except Exception:
++            pass
++        if parsed is not None:
++            keys.extend(parsed)
++        elif "," in val:
++            keys.extend([x for x in (s.strip() for s in val.split(",")) if x])
++        else:
++            for x in val.split():
++                if x:
++                    keys.append(x)
++    return keys
++
++
++def out(raw):
++    if raw is None or raw == "":
++        return
++    try:
++        obj = json.loads(raw)
++        print(json.dumps(obj, indent=4, default=str))
++    except Exception:
++        print(raw)
++
++
++USAGE_EXIT = 252
++
++
++def need(params, keys):
++    for k in keys:
++        if k not in params:
++            return False
++    return True
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3:
++        eprint("usage: aws kinesis <command>")
++        return USAGE_EXIT
++    cmd = argv[2]
++    rest = argv[3:]
++
++    if cmd == "create-stream":
++        spec = {
++            "--stream-name": ("str", "StreamName"),
++            "--shard-count": ("int", "ShardCount"),
++            "--stream-mode-details": ("json", "StreamModeDetails"),
++            "--tags": ("str", "_tags"),
++        }
++        params, err = parse_args(rest, spec)
++        if err:
++            eprint("ValidationException: " + err)
++            return USAGE_EXIT
++        if not need(params, ["StreamName"]):
++            eprint("ValidationException: --stream-name is required")
++            return USAGE_EXIT
++        tags_raw = params.pop("_tags", None)
++        body = {"StreamName": params["StreamName"]}
++        if "ShardCount" in params:
++            body["ShardCount"] = params["ShardCount"]
++        if "StreamModeDetails" in params:
++            body["StreamModeDetails"] = params["StreamModeDetails"]
++        if tags_raw not in (None, ""):
++            body["Tags"] = parse_tags_shorthand(tags_raw)
++        rc, raw = call("CreateStream", body)
++        if rc == 0:
++            out(raw)
++            return 0
++        if raw is not None:
++            eprint(raw)
++        return rc
++
++    if cmd == "describe-stream":
++        spec = {
++            "--stream-name": ("str", "StreamName"),
++            "--stream-arn": ("str", "StreamARN"),
++            "--limit": ("int", "Limit"),
++            "--exclusive-start-shard-id": ("str", "ExclusiveStartShardId"),
++        }
++        params, err = parse_args(rest, spec)
++        if err:
++            eprint("ValidationException: " + err)
++            return USAGE_EXIT
++        if "Limit" in params and not (1 <= params["Limit"] <= 10000):
++            eprint("InvalidArgumentException: Invalid value for --limit (ValidationException)")
++            return USAGE_EXIT
++        if "StreamName" in params and params["StreamName"] == "":
++            eprint("ValidationException: invalid stream name")
++            return USAGE_EXIT
++        rc, raw = call("DescribeStream", {k: v for k, v in params.items()})
++        if rc == 0:
++            out(raw)
++            return 0
++        if raw is not None:
++            eprint(raw)
++        return rc
++
++    if cmd == "describe-stream-summary":
++        spec = {
++            "--stream-name": ("str", "StreamName"),
++            "--stream-arn": ("str", "StreamARN"),
++            "--stream-id": ("str", "_id"),
++        }
++        params, err = parse_args(rest, spec)
++        if err:
++            eprint("ValidationException: " + err)
++            return USAGE_EXIT
++        for f in ("StreamName", "StreamARN", "_id"):
++            if f in params and params[f] == "":
++                eprint("ValidationException: invalid value")
++                return USAGE_EXIT
++        params.pop("_id", None)
++        rc, raw = call("DescribeStreamSummary", params)
++        if rc == 0:
++            out(raw)
++            return 0
++        if raw is not None:
++            eprint(raw)
++        return rc
++
++    if cmd == "list-streams":
++        spec = {
++            "--limit": ("int", "Limit"),
++            "--exclusive-start-stream-name": ("str", "ExclusiveStartStreamName"),
++            "--next-token": ("str", "NextToken"),
++        }
++        params, err = parse_args(rest, spec)
++        if err:
++            eprint("ValidationException: " + err)
++            return USAGE_EXIT
++        if "Limit" in params and not (1 <= params["Limit"] <= 10000):
++            eprint("InvalidArgumentException: Invalid value for --limit (ValidationException)")
++            return USAGE_EXIT
++        if "ExclusiveStartStreamName" in params:
++            v = params["ExclusiveStartStreamName"]
++            if v == "" or len(v) > 128:
++                eprint("ValidationException: invalid value for exclusive-start-stream-name")
++                return USAGE_EXIT
++        rc, raw = call("ListStreams", params)
++        if rc == 0:
++            out(raw)
++            return 0
++        if raw is not None:
++            eprint(raw)
++        return rc
++
++    if cmd == "delete-stream":
++        spec = {
++            "--stream-name": ("str", "StreamName"),
++            "--stream-arn": ("str", "StreamARN"),
++            "--stream-id": ("str", "_id"),
++            "--enforce-consumer-deletion": ("str", "_ecd"),
++            "--no-enforce-consumer-deletion": ("str", "_necd"),
++        }
++        params, err = parse_args(rest, spec)
++        if err:
++            eprint("ValidationException: " + err)
++            return USAGE_EXIT
++        if "StreamName" in params and params["StreamName"] == "":
++            eprint("ValidationException: Invalid stream name")
++            return USAGE_EXIT
++        params.pop("_id", None)
++        params.pop("_ecd", None)
++        params.pop("_necd", None)
++        rc, raw = call("DeleteStream", params)
++        if rc == 0:
++            out(raw)
++            return 0
++        if raw is not None:
++            eprint(raw)
++        return rc
++
++    if cmd == "put-record":
++        spec = {
++            "--stream-name": ("str", "StreamName"),
++            "--stream-arn": ("str", "StreamARN"),
++            "--data": ("str", "Data"),
++            "--partition-key": ("str", "PartitionKey"),
++            "--explicit-hash-key": ("str", "ExplicitHashKey"),
++            "--sequence-number-for-ordering": ("str", "SequenceNumberForOrdering"),
++        }
++        params, err = parse_args(rest, spec)
++        if err:
++            eprint("ValidationException: " + err)
++            return USAGE_EXIT
++        if "Data" not in params or "PartitionKey" not in params:
++            eprint("ValidationException: --data and --partition-key are required")
++            return USAGE_EXIT
++        rc, raw = call("PutRecord", params)
++        if rc == 0:
++            out(raw)
++            return 0
++        if raw is not None:
++            eprint(raw)
++        return rc
++
++    if cmd == "put-records":
++        spec = {
++            "--stream-name": ("str", "StreamName"),
++            "--stream-arn": ("str", "StreamARN"),
++            "--records": ("str", "_records"),
++        }
++        params, err = parse_args(rest, spec)
++        if err:
++            eprint("ValidationException: " + err)
++            return USAGE_EXIT
++        if "_records" not in params or params["_records"] == "":
++            eprint("ValidationException: --records is required")
++            return USAGE_EXIT
++        recs_raw = read_value(params["_records"])
++        try:
++            recs = json.loads(recs_raw)
++        except Exception:
++            eprint("ValidationException: invalid --records")
++            return USAGE_EXIT
++        norm = []
++        for r in recs:
++            entry = {}
++            if "Data" in r:
++                entry["Data"] = r["Data"]
++            if "PartitionKey" in r:
++                entry["PartitionKey"] = r["PartitionKey"]
++            if "ExplicitHashKey" in r:
++                entry["ExplicitHashKey"] = r["ExplicitHashKey"]
++            norm.append(entry)
++        body = {"Records": norm}
++        if "StreamName" in params:
++            body["StreamName"] = params["StreamName"]
++        if "StreamARN" in params:
++            body["StreamARN"] = params["StreamARN"]
++        rc, raw = call("PutRecords", body)
++        if rc == 0:
++            out(raw)
++            return 0
++        if raw is not None:
++            eprint(raw)
++        return rc
++
++    if cmd == "get-shard-iterator":
++        spec = {
++            "--stream-name": ("str", "StreamName"),
++            "--stream-arn": ("str", "StreamARN"),
++            "--shard-id": ("str", "ShardId"),
++            "--shard-iterator-type": ("str", "ShardIteratorType"),
++            "--starting-sequence-number": ("str", "StartingSequenceNumber"),
++            "--timestamp": ("str", "Timestamp"),
++        }
++        params, err = parse_args(rest, spec)
++        if err:
++            eprint("ValidationException: " + err)
++            return USAGE_EXIT
++        if "ShardId" not in params or params.get("ShardId") == "":
++            eprint("InvalidArgumentException: --shard-id is required")
++            return USAGE_EXIT
++        if "ShardIteratorType" not in params:
++            eprint("ValidationException: --shard-iterator-type is required")
++            return USAGE_EXIT
++        rc, raw = call("GetShardIterator", params)
++        if rc == 0:
++            out(raw)
++            return 0
++        if raw is not None:
++            eprint(raw)
++        return rc
++
++    if cmd == "get-records":
++        spec = {
++            "--shard-iterator": ("str", "ShardIterator"),
++            "--stream-arn": ("str", "StreamARN"),
++            "--limit": ("int", "Limit"),
++        }
++        params, err = parse_args(rest, spec)
++        if err:
++            eprint("ValidationException: " + err)
++            return USAGE_EXIT
++        if not need(params, ["ShardIterator"]):
++            eprint("ValidationException: --shard-iterator is required")
++            return USAGE_EXIT
++        rc, raw = call("GetRecords", params)
++        if rc == 0:
++            out(raw)
++            return 0
++        if raw is not None:
++            eprint(raw)
++        return rc
++
++    if cmd == "list-shards":
++        spec = {
++            "--stream-name": ("str", "StreamName"),
++            "--stream-arn": ("str", "StreamARN"),
++            "--next-token": ("str", "NextToken"),
++            "--exclusive-start-shard-id": ("str", "ExclusiveStartShardId"),
++            "--max-results": ("int", "MaxResults"),
++        }
++        params, err = parse_args(rest, spec)
++        if err:
++            eprint("ValidationException: " + err)
++            return USAGE_EXIT
++        for f in ("StreamName", "NextToken", "ExclusiveStartShardId"):
++            if f in params and params[f] == "":
++                eprint("ValidationException: invalid value")
++                return USAGE_EXIT
++        if "StreamName" in params and len(params["StreamName"]) > 128:
++            eprint("ValidationException: invalid stream name")
++            return USAGE_EXIT
++        rc, raw = call("ListShards", params)
++        if rc == 0:
++            out(raw)
++            return 0
++        if raw is not None:
++            eprint(raw)
++        return rc
++
++    if cmd == "add-tags-to-stream":
++        spec = {
++            "--stream-name": ("str", "StreamName"),
++            "--stream-arn": ("str", "StreamARN"),
++            "--tags": ("str", "_tags"),
++        }
++        params, err = parse_args(rest, spec)
++        if err:
++            eprint("ValidationException: " + err)
++            return USAGE_EXIT
++        if "_tags" not in params or params["_tags"] == "":
++            eprint("ValidationException: --tags is required")
++            return USAGE_EXIT
++        tags = parse_tags_shorthand(params["_tags"])
++        body = {"Tags": tags}
++        if "StreamName" in params:
++            body["StreamName"] = params["StreamName"]
++        if "StreamARN" in params:
++            body["StreamARN"] = params["StreamARN"]
++        rc, raw = call("AddTagsToStream", body)
++        if rc == 0:
++            out(raw)
++            return 0
++        if raw is not None:
++            eprint(raw)
++        return rc
++
++    if cmd == "list-tags-for-stream":
++        spec = {
++            "--stream-name": ("str", "StreamName"),
++            "--stream-arn": ("str", "StreamARN"),
++            "--exclusive-start-tag-key": ("str", "ExclusiveStartTagKey"),
++            "--limit": ("int", "Limit"),
++        }
++        params, err = parse_args(rest, spec)
++        if err:
++            eprint("ValidationException: " + err)
++            return USAGE_EXIT
++        for f in ("StreamName",):
++            if f in params and params[f] == "":
++                eprint("ValidationException: invalid value")
++                return USAGE_EXIT
++        if "ExclusiveStartTagKey" in params and params["ExclusiveStartTagKey"] == "":
++            eprint("ValidationException: invalid tag key")
++            return USAGE_EXIT
++        if "StreamName" in params and len(params["StreamName"]) > 128:
++            eprint("ValidationException: invalid stream name")
++            return USAGE_EXIT
++        if "ExclusiveStartTagKey" in params and len(params["ExclusiveStartTagKey"]) > 128:
++            eprint("ValidationException: invalid tag key")
++            return USAGE_EXIT
++        rc, raw = call("ListTagsForStream", params)
++        if rc == 0:
++            out(raw)
++            return 0
++        if raw is not None:
++            eprint(raw)
++        return rc
++
++    if cmd == "remove-tags-from-stream":
++        spec = {
++            "--stream-name": ("str", "StreamName"),
++            "--stream-arn": ("str", "StreamARN"),
++            "--tag-keys": ("multi", "_tagkeys"),
++        }
++        params, err = parse_args(rest, spec, multi_flags={"--tag-keys"})
++        if err:
++            eprint("ValidationException: " + err)
++            return USAGE_EXIT
++        if "_tagkeys" not in params or not params["_tagkeys"]:
++            eprint("ValidationException: --tag-keys is required")
++            return USAGE_EXIT
++        keys = parse_tagkeys(params["_tagkeys"])
++        body = {"TagKeys": keys}
++        if "StreamName" in params:
++            body["StreamName"] = params["StreamName"]
++        if "StreamARN" in params:
++            body["StreamARN"] = params["StreamARN"]
++        rc, raw = call("RemoveTagsFromStream", body)
++        if rc == 0:
++            out(raw)
++            return 0
++        if raw is not None:
++            eprint(raw)
++        return rc
++
++    if cmd in ("increase-stream-retention-period", "decrease-stream-retention-period"):
++        op = "IncreaseStreamRetentionPeriod" if cmd.startswith("increase") else "DecreaseStreamRetentionPeriod"
++        spec = {
++            "--stream-name": ("str", "StreamName"),
++            "--stream-arn": ("str", "StreamARN"),
++            "--stream-id": ("str", "_id"),
++            "--retention-period-hours": ("int", "RetentionPeriodHours"),
++        }
++        params, err = parse_args(rest, spec)
++        if err:
++            eprint("ValidationException: " + err)
++            return USAGE_EXIT
++        if "RetentionPeriodHours" not in params:
++            eprint("ValidationException: --retention-period-hours is required")
++            return USAGE_EXIT
++        for f in ("StreamName", "StreamARN", "_id"):
++            if f in params and params[f] == "":
++                eprint("ValidationException: invalid value")
++                return USAGE_EXIT
++        params.pop("_id", None)
++        rc, raw = call(op, params)
++        if rc == 0:
++            out(raw)
++            return 0
++        if raw is not None:
++            eprint(raw)
++        return rc
++
++    eprint("unknown command: %s" % cmd)
++    return USAGE_EXIT
++
++
++if __name__ == "__main__":
++    sys.exit(main())

@@ -1,0 +1,2480 @@
+diff --git a/submission/kubectl.go b/submission/kubectl.go
+new file mode 100644
+--- /dev/null
++++ b/submission/kubectl.go
+@@ -0,0 +1,2467 @@
++package main
++
++import (
++	"bytes"
++	"crypto/tls"
++	"crypto/x509"
++	"encoding/base64"
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"os"
++	"path/filepath"
++	"sort"
++	"strconv"
++	"strings"
++	"time"
++	"unicode"
++)
++
++var kindAliases = map[string]string{
++	"po": "Pod", "pod": "Pod", "pods": "Pod",
++	"svc": "Service", "service": "Service", "services": "Service",
++	"cm": "ConfigMap", "configmap": "ConfigMap", "configmaps": "ConfigMap",
++	"secret": "Secret", "secrets": "Secret",
++	"sa": "ServiceAccount", "serviceaccount": "ServiceAccount", "serviceaccounts": "ServiceAccount",
++	"pvc": "PersistentVolumeClaim", "persistentvolumeclaim": "PersistentVolumeClaim", "persistentvolumeclaims": "PersistentVolumeClaim",
++	"ns": "Namespace", "namespace": "Namespace", "namespaces": "Namespace",
++	"deploy": "Deployment", "deployment": "Deployment", "deployments": "Deployment",
++	"ds": "DaemonSet", "daemonset": "DaemonSet", "daemonsets": "DaemonSet",
++	"sts": "StatefulSet", "statefulset": "StatefulSet", "statefulsets": "StatefulSet",
++	"rs": "ReplicaSet", "replicaset": "ReplicaSet", "replicasets": "ReplicaSet",
++	"job": "Job", "jobs": "Job",
++	"cj": "CronJob", "cronjob": "CronJob", "cronjobs": "CronJob",
++	"ing": "Ingress", "ingress": "Ingress", "ingresses": "Ingress",
++	"role": "Role", "roles": "Role",
++	"clusterrole": "ClusterRole", "clusterroles": "ClusterRole",
++	"rolebinding": "RoleBinding", "rolebindings": "RoleBinding", "rb": "RoleBinding",
++	"clusterrolebinding": "ClusterRoleBinding", "clusterrolebindings": "ClusterRoleBinding", "crb": "ClusterRoleBinding",
++	"rq": "ResourceQuota", "resourcequota": "ResourceQuota", "resourcequotas": "ResourceQuota", "quota": "ResourceQuota",
++	"limitrange": "LimitRange", "limitranges": "LimitRange", "limits": "LimitRange",
++	"pdb": "PodDisruptionBudget", "poddisruptionbudget": "PodDisruptionBudget", "poddisruptionbudgets": "PodDisruptionBudget",
++	"pc": "PriorityClass", "priorityclass": "PriorityClass", "priorityclasses": "PriorityClass",
++	"netpol": "NetworkPolicy", "networkpolicy": "NetworkPolicy", "networkpolicies": "NetworkPolicy",
++}
++
++type kindInfo struct {
++	Group, Version, Plural string
++	Namespaced             bool
++}
++
++var kindTable = map[string]kindInfo{
++	"Pod":                   {"", "v1", "pods", true},
++	"Service":               {"", "v1", "services", true},
++	"ConfigMap":             {"", "v1", "configmaps", true},
++	"Secret":                {"", "v1", "secrets", true},
++	"ServiceAccount":        {"", "v1", "serviceaccounts", true},
++	"PersistentVolumeClaim": {"", "v1", "persistentvolumeclaims", true},
++	"Namespace":             {"", "v1", "namespaces", false},
++	"ResourceQuota":         {"", "v1", "resourcequotas", true},
++	"LimitRange":            {"", "v1", "limitranges", true},
++	"Deployment":            {"apps", "v1", "deployments", true},
++	"DaemonSet":             {"apps", "v1", "daemonsets", true},
++	"StatefulSet":           {"apps", "v1", "statefulsets", true},
++	"ReplicaSet":            {"apps", "v1", "replicasets", true},
++	"Job":                   {"batch", "v1", "jobs", true},
++	"CronJob":               {"batch", "v1", "cronjobs", true},
++	"Ingress":               {"networking.k8s.io", "v1", "ingresses", true},
++	"NetworkPolicy":         {"networking.k8s.io", "v1", "networkpolicies", true},
++	"Role":                  {"rbac.authorization.k8s.io", "v1", "roles", true},
++	"ClusterRole":           {"rbac.authorization.k8s.io", "v1", "clusterroles", false},
++	"RoleBinding":           {"rbac.authorization.k8s.io", "v1", "rolebindings", true},
++	"ClusterRoleBinding":    {"rbac.authorization.k8s.io", "v1", "clusterrolebindings", false},
++	"PodDisruptionBudget":   {"policy", "v1", "poddisruptionbudgets", true},
++	"PriorityClass":         {"scheduling.k8s.io", "v1", "priorityclasses", false},
++}
++
++func resolveKind(t string) string {
++	lc := strings.ToLower(t)
++	if k, ok := kindAliases[lc]; ok {
++		return k
++	}
++	if t == "" {
++		return ""
++	}
++	return strings.ToUpper(t[:1]) + t[1:]
++}
++
++func getAPI(kind string) (kindInfo, bool) {
++	info, ok := kindTable[kind]
++	return info, ok
++}
++
++func resourceRepr(kind string) string {
++	info, ok := kindTable[kind]
++	if !ok {
++		return strings.ToLower(kind)
++	}
++	if info.Group == "" {
++		return strings.ToLower(kind)
++	}
++	return strings.ToLower(kind) + "." + info.Group
++}
++
++func kindPluralLower(kind string) string {
++	if info, ok := kindTable[kind]; ok {
++		return info.Plural
++	}
++	return strings.ToLower(kind) + "s"
++}
++
++func errAPI(status int, msg string) {
++	reason := "Error"
++	switch status {
++	case 404:
++		reason = "NotFound"
++	case 409:
++		reason = "AlreadyExists"
++	case 422:
++		reason = "Invalid"
++	case 403:
++		reason = "Forbidden"
++	case 408:
++		reason = "Timeout"
++	case 400:
++		reason = "BadRequest"
++	case 500:
++		reason = "InternalError"
++	case 401:
++		reason = "Unauthorized"
++	case 503:
++		reason = "ServiceUnavailable"
++	}
++	fmt.Fprintf(os.Stderr, "Error from server (%s): %s (%d)\n", reason, msg, status)
++	os.Exit(1)
++}
++
++func usageErr(msg string) {
++	fmt.Fprintf(os.Stderr, "error: %s\n", msg)
++	os.Exit(2)
++}
++
++func notFoundErr(msg string) {
++	fmt.Fprintf(os.Stderr, "error: %s\n", msg)
++	os.Exit(1)
++}
++
++func die(msg string) {
++	fmt.Fprintf(os.Stderr, "error: %s\n", msg)
++	os.Exit(1)
++}
++
++type yamlLine struct {
++	indent  int
++	content string
++	raw     string
++}
++
++func parseYAMLAll(src string) ([]any, error) {
++	docs := []any{}
++	rawLines := strings.Split(src, "\n")
++	var cur []yamlLine
++	flush := func() {
++		if len(cur) == 0 {
++			docs = append(docs, nil)
++			return
++		}
++		v, err := parseYAMLBlock(cur, 0, 0)
++		if err != nil {
++			docs = append(docs, nil)
++			return
++		}
++		if v == nil {
++			docs = append(docs, nil)
++		} else {
++			docs = append(docs, v)
++		}
++		cur = nil
++	}
++	for _, ln := range rawLines {
++		trimmed := strings.TrimRight(ln, "\r")
++		stripped := strings.TrimLeft(trimmed, " \t")
++		if strings.HasPrefix(strings.TrimSpace(trimmed), "---") {
++			flush()
++			continue
++		}
++		if strings.HasPrefix(strings.TrimSpace(trimmed), "...") {
++			flush()
++			continue
++		}
++		if stripped == "" {
++			continue
++		}
++		if strings.HasPrefix(stripped, "#") {
++			continue
++		}
++		indent := 0
++		for _, c := range trimmed {
++			if c == ' ' {
++				indent++
++			} else if c == '\t' {
++				indent += 8
++			} else {
++				break
++			}
++		}
++		content := stripComment(stripped)
++		if content == "" {
++			continue
++		}
++		cur = append(cur, yamlLine{indent: indent, content: content, raw: trimmed})
++	}
++	flush()
++	if len(docs) > 0 && docs[len(docs)-1] == nil && len(rawLines) > 0 {
++	}
++	out := []any{}
++	for _, d := range docs {
++		if d != nil {
++			out = append(out, d)
++		}
++	}
++	return out, nil
++}
++
++func stripComment(s string) string {
++	inSingle, inDouble := false, false
++	depth := 0
++	for i := 0; i < len(s); i++ {
++		c := s[i]
++		switch {
++		case c == '\'' && !inDouble:
++			inSingle = !inSingle
++		case c == '"' && !inSingle:
++			inDouble = !inDouble
++		case (c == '{' || c == '[') && !inSingle && !inDouble:
++			depth++
++		case (c == '}' || c == ']') && !inSingle && !inDouble:
++			depth--
++		case c == '#' && !inSingle && !inDouble && depth == 0:
++			if i == 0 || s[i-1] == ' ' || s[i-1] == '\t' {
++				return strings.TrimRight(s[:i], " \t")
++			}
++		}
++	}
++	return s
++}
++
++func parseYAMLBlock(lines []yamlLine, start int, minIndent int) (any, error) {
++	if start >= len(lines) {
++		return nil, nil
++	}
++	firstIndent := lines[start].indent
++	if firstIndent < minIndent {
++		return nil, nil
++	}
++	if strings.HasPrefix(lines[start].content, "- ") || lines[start].content == "-" {
++		return parseYAMLBlockList(lines, start, firstIndent)
++	}
++	return parseYAMLBlockMap(lines, start, firstIndent)
++}
++
++func parseYAMLBlockList(lines []yamlLine, start int, indent int) ([]any, error) {
++	items := []any{}
++	i := start
++	for i < len(lines) {
++		if lines[i].indent < indent {
++			break
++		}
++		if lines[i].indent > indent {
++			i++
++			continue
++		}
++		c := lines[i].content
++		if !strings.HasPrefix(c, "- ") && c != "-" {
++			break
++		}
++		var rest string
++		if c == "-" {
++			rest = ""
++		} else {
++			rest = strings.TrimLeft(c[2:], " \t")
++		}
++		if rest == "" {
++			child, next := consumeChild(lines, i+1, indent)
++			items = append(items, child)
++			i = next
++		} else if kv, ok := splitKeyValue(rest); ok {
++			m := map[string]any{}
++			if kv.value == "" {
++				child, next := consumeChild(lines, i+1, indent+2)
++				m[kv.key] = child
++				i = next
++			} else {
++				v, err := parseScalarOrFlow(kv.value)
++				if err != nil {
++					return nil, err
++				}
++				m[kv.key] = v
++				i++
++			}
++			for i < len(lines) && lines[i].indent > indent {
++				if lines[i].indent == indent+2 {
++					mkv, ok := splitKeyValue(lines[i].content)
++					if !ok {
++						i++
++						continue
++					}
++					if mkv.value == "" {
++						child, next := consumeChild(lines, i+1, indent+2)
++						m[mkv.key] = child
++						i = next
++					} else {
++						vv, err := parseScalarOrFlow(mkv.value)
++						if err != nil {
++							return nil, err
++						}
++						m[mkv.key] = vv
++						i++
++					}
++				} else {
++					i++
++				}
++			}
++			items = append(items, m)
++		} else {
++			v, err := parseScalarOrFlow(rest)
++			if err != nil {
++				return nil, err
++			}
++			items = append(items, v)
++			i++
++		}
++	}
++	return items, nil
++}
++
++func consumeChild(lines []yamlLine, start int, parentIndent int) (any, int) {
++	if start >= len(lines) {
++		return nil, start
++	}
++	if lines[start].indent == parentIndent && (strings.HasPrefix(lines[start].content, "- ") || lines[start].content == "-") {
++		childIndent := parentIndent
++		sub := []yamlLine{}
++		i := start
++		for i < len(lines) && lines[i].indent >= childIndent {
++			if lines[i].indent == parentIndent && !strings.HasPrefix(lines[i].content, "- ") && lines[i].content != "-" {
++				break
++			}
++			sub = append(sub, lines[i])
++			i++
++		}
++		v, _ := parseYAMLBlock(sub, 0, childIndent)
++		return v, i
++	}
++	if lines[start].indent <= parentIndent {
++		return nil, start
++	}
++	childIndent := lines[start].indent
++	sub := []yamlLine{}
++	i := start
++	for i < len(lines) && lines[i].indent >= childIndent {
++		sub = append(sub, lines[i])
++		i++
++	}
++	v, _ := parseYAMLBlock(sub, 0, childIndent)
++	return v, i
++}
++
++type kvPair struct {
++	key   string
++	value string
++}
++
++func splitKeyValue(s string) (kvPair, bool) {
++	inSingle, inDouble := false, false
++	depth := 0
++	for i := 0; i < len(s); i++ {
++		c := s[i]
++		switch {
++		case c == '\'' && !inDouble:
++			inSingle = !inSingle
++		case c == '"' && !inSingle:
++			inDouble = !inDouble
++		case (c == '{' || c == '[') && !inSingle && !inDouble:
++			depth++
++		case (c == '}' || c == ']') && !inSingle && !inDouble:
++			depth--
++		case c == ':' && !inSingle && !inDouble && depth == 0:
++			if i+1 >= len(s) || s[i+1] == ' ' || s[i+1] == '\t' {
++				k := strings.TrimSpace(s[:i])
++				v := ""
++				if i+1 < len(s) {
++					v = strings.TrimSpace(s[i+1:])
++				}
++				k = unquote(k)
++				return kvPair{key: k, value: v}, true
++			}
++			if i == len(s)-1 {
++				return kvPair{key: unquote(strings.TrimSpace(s[:i])), value: ""}, true
++			}
++		}
++	}
++	return kvPair{}, false
++}
++
++func parseYAMLBlockMap(lines []yamlLine, start int, indent int) (map[string]any, error) {
++	m := map[string]any{}
++	i := start
++	for i < len(lines) {
++		if lines[i].indent < indent {
++			break
++		}
++		if lines[i].indent > indent {
++			i++
++			continue
++		}
++		kv, ok := splitKeyValue(lines[i].content)
++		if !ok {
++			i++
++			continue
++		}
++		if kv.value == "" {
++			child, next := consumeChild(lines, i+1, indent)
++			m[kv.key] = child
++			i = next
++		} else if strings.HasPrefix(kv.value, "|") || strings.HasPrefix(kv.value, ">") {
++			literal := strings.HasPrefix(kv.value, "|")
++			i++
++			blk := []string{}
++			for i < len(lines) && lines[i].indent > indent {
++				blk = append(blk, strings.Repeat(" ", lines[i].indent-indent-2)+lines[i].content)
++				i++
++			}
++			if literal {
++				m[kv.key] = strings.Join(blk, "\n") + "\n"
++			} else {
++				m[kv.key] = strings.Join(blk, " ")
++			}
++		} else {
++			v, err := parseScalarOrFlow(kv.value)
++			if err != nil {
++				return nil, err
++			}
++			m[kv.key] = v
++			i++
++		}
++	}
++	return m, nil
++}
++
++func unquote(s string) string {
++	if len(s) >= 2 {
++		if s[0] == '"' && s[len(s)-1] == '"' {
++			out, err := strconv.Unquote(s)
++			if err == nil {
++				return out
++			}
++			return s[1 : len(s)-1]
++		}
++		if s[0] == '\'' && s[len(s)-1] == '\'' {
++			return strings.ReplaceAll(s[1:len(s)-1], "''", "'")
++		}
++	}
++	return s
++}
++
++func parseScalarOrFlow(s string) (any, error) {
++	s = strings.TrimSpace(s)
++	if s == "" || s == "~" || s == "null" || s == "Null" || s == "NULL" {
++		return nil, nil
++	}
++	if strings.HasPrefix(s, "{") {
++		v, _, err := parseFlow(s, 0)
++		return v, err
++	}
++	if strings.HasPrefix(s, "[") {
++		v, _, err := parseFlow(s, 0)
++		return v, err
++	}
++	return parseScalar(s), nil
++}
++
++func parseScalar(s string) any {
++	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') {
++		return unquote(s)
++	}
++	switch s {
++	case "true", "True", "TRUE", "yes", "Yes":
++		return true
++	case "false", "False", "FALSE", "no", "No":
++		return false
++	}
++	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
++		return n
++	}
++	if f, err := strconv.ParseFloat(s, 64); err == nil {
++		return f
++	}
++	return s
++}
++
++func parseFlow(s string, pos int) (any, int, error) {
++	pos = skipSpace(s, pos)
++	if pos >= len(s) {
++		return nil, pos, fmt.Errorf("unexpected eof")
++	}
++	if s[pos] == '{' {
++		return parseFlowMap(s, pos+1)
++	}
++	if s[pos] == '[' {
++		return parseFlowList(s, pos+1)
++	}
++	return parseFlowScalar(s, pos)
++}
++
++func parseFlowMap(s string, pos int) (map[string]any, int, error) {
++	m := map[string]any{}
++	pos = skipSpace(s, pos)
++	if pos < len(s) && s[pos] == '}' {
++		return m, pos + 1, nil
++	}
++	for pos < len(s) {
++		pos = skipSpace(s, pos)
++		key, next, err := readFlowKey(s, pos)
++		if err != nil {
++			return nil, pos, err
++		}
++		pos = skipSpace(s, next)
++		if pos >= len(s) || s[pos] != ':' {
++			m[key] = nil
++		} else {
++			pos++
++			pos = skipSpace(s, pos)
++			v, next2, err := parseFlow(s, pos)
++			if err != nil {
++				return nil, pos, err
++			}
++			m[key] = v
++			pos = next2
++		}
++		pos = skipSpace(s, pos)
++		if pos < len(s) && s[pos] == ',' {
++			pos++
++			continue
++		}
++		if pos < len(s) && s[pos] == '}' {
++			return m, pos + 1, nil
++		}
++		if pos >= len(s) {
++			return nil, pos, fmt.Errorf("unterminated flow map")
++		}
++	}
++	return nil, pos, fmt.Errorf("unterminated flow map")
++}
++
++func parseFlowList(s string, pos int) ([]any, int, error) {
++	list := []any{}
++	pos = skipSpace(s, pos)
++	if pos < len(s) && s[pos] == ']' {
++		return list, pos + 1, nil
++	}
++	for pos < len(s) {
++		pos = skipSpace(s, pos)
++		v, next, err := parseFlow(s, pos)
++		if err != nil {
++			return nil, pos, err
++		}
++		list = append(list, v)
++		pos = skipSpace(s, next)
++		if pos < len(s) && s[pos] == ',' {
++			pos++
++			continue
++		}
++		if pos < len(s) && s[pos] == ']' {
++			return list, pos + 1, nil
++		}
++		if pos >= len(s) {
++			return nil, pos, fmt.Errorf("unterminated flow list")
++		}
++	}
++	return nil, pos, fmt.Errorf("unterminated flow list")
++}
++
++func readFlowKey(s string, pos int) (string, int, error) {
++	pos = skipSpace(s, pos)
++	if pos >= len(s) {
++		return "", pos, fmt.Errorf("expected key")
++	}
++	if s[pos] == '"' || s[pos] == '\'' {
++		q := s[pos]
++		start := pos
++		pos++
++		for pos < len(s) && s[pos] != q {
++			if s[pos] == '\\' && pos+1 < len(s) {
++				pos += 2
++				continue
++			}
++			pos++
++		}
++		if pos >= len(s) {
++			return "", pos, fmt.Errorf("unterminated string")
++		}
++		key := unquote(s[start : pos+1])
++		return key, pos + 1, nil
++	}
++	start := pos
++	for pos < len(s) && s[pos] != ':' && s[pos] != ',' && s[pos] != '}' && s[pos] != ']' {
++		pos++
++	}
++	return strings.TrimSpace(s[start:pos]), pos, nil
++}
++
++func parseFlowScalar(s string, pos int) (any, int, error) {
++	if pos >= len(s) {
++		return nil, pos, nil
++	}
++	if s[pos] == '"' || s[pos] == '\'' {
++		q := s[pos]
++		start := pos
++		pos++
++		for pos < len(s) && s[pos] != q {
++			if s[pos] == '\\' && pos+1 < len(s) {
++				pos += 2
++				continue
++			}
++			pos++
++		}
++		if pos >= len(s) {
++			return nil, pos, fmt.Errorf("unterminated string")
++		}
++		v := unquote(s[start : pos+1])
++		return v, pos + 1, nil
++	}
++	start := pos
++	for pos < len(s) && s[pos] != ',' && s[pos] != '}' && s[pos] != ']' {
++		pos++
++	}
++	tok := strings.TrimSpace(s[start:pos])
++	return parseScalar(tok), pos, nil
++}
++
++func skipSpace(s string, pos int) int {
++	for pos < len(s) && (s[pos] == ' ' || s[pos] == '\t' || s[pos] == '\n') {
++		pos++
++	}
++	return pos
++}
++
++func emitYAML(v any) string {
++	var b strings.Builder
++	emitYAMLAt(&b, v, 0, false)
++	return b.String()
++}
++
++func emitYAMLAt(b *strings.Builder, v any, indent int, inList bool) {
++	pad := strings.Repeat(" ", indent)
++	switch x := v.(type) {
++	case map[string]any:
++		if len(x) == 0 {
++			b.WriteString("{}\n")
++			return
++		}
++		keys := make([]string, 0, len(x))
++		for k := range x {
++			keys = append(keys, k)
++		}
++		sort.Strings(keys)
++		first := true
++		for _, k := range keys {
++			if first && inList {
++				first = false
++			} else {
++				b.WriteString(pad)
++			}
++			b.WriteString(k)
++			b.WriteString(":")
++			cv := x[k]
++			if isScalar(cv) {
++				b.WriteString(" ")
++				b.WriteString(scalarYAML(cv))
++				b.WriteString("\n")
++			} else {
++				b.WriteString("\n")
++				emitYAMLAt(b, cv, indent+2, false)
++			}
++		}
++	case []any:
++		if len(x) == 0 {
++			b.WriteString("[]\n")
++			return
++		}
++		for _, item := range x {
++			b.WriteString(pad)
++			b.WriteString("- ")
++			if isScalar(item) {
++				b.WriteString(scalarYAML(item))
++				b.WriteString("\n")
++			} else {
++				emitYAMLAt(b, item, indent+2, true)
++			}
++		}
++	default:
++		b.WriteString(pad)
++		b.WriteString(scalarYAML(v))
++		b.WriteString("\n")
++	}
++}
++
++func isScalar(v any) bool {
++	switch v.(type) {
++	case map[string]any, []any:
++		return false
++	}
++	return true
++}
++
++func scalarYAML(v any) string {
++	if v == nil {
++		return "null"
++	}
++	switch x := v.(type) {
++	case string:
++		if needsQuote(x) {
++			return strconv.Quote(x)
++		}
++		return x
++	case bool:
++		if x {
++			return "true"
++		}
++		return "false"
++	case int:
++		return strconv.Itoa(x)
++	case int64:
++		return strconv.FormatInt(x, 10)
++	case float64:
++		return strconv.FormatFloat(x, 'g', -1, 64)
++	}
++	return fmt.Sprintf("%v", v)
++}
++
++func needsQuote(s string) bool {
++	if s == "" {
++		return true
++	}
++	for _, r := range s {
++		if r == ':' || r == '#' || r == '\n' || r == '\'' || r == '"' || r == '{' || r == '}' || r == '[' || r == ']' || r == ',' || r == '&' || r == '*' || r == '!' || r == '|' || r == '>' || r == '%' || r == '@' || r == '`' {
++			return true
++		}
++	}
++	if _, err := strconv.ParseFloat(s, 64); err == nil {
++		return true
++	}
++	switch s {
++	case "true", "false", "null", "yes", "no", "True", "False", "Null", "Yes", "No":
++		return true
++	}
++	if !unicode.IsLetter(rune(s[0])) && s[0] != '/' && s[0] != '_' {
++		return true
++	}
++	return false
++}
++
++type restCfg struct {
++	Server   string
++	CA       []byte
++	Insecure bool
++	Cert     []byte
++	Key      []byte
++	Token    string
++}
++
++func loadKubeconfig() (*restCfg, error) {
++	path := os.Getenv("KUBECONFIG")
++	if path == "" {
++		home, _ := os.UserHomeDir()
++		path = filepath.Join(home, ".kube", "config")
++	}
++	if strings.Contains(path, ":") {
++		path = strings.Split(path, ":")[0]
++	}
++	data, err := os.ReadFile(path)
++	if err != nil {
++		return nil, fmt.Errorf("read kubeconfig: %w", err)
++	}
++	docs, err := parseYAMLAll(string(data))
++	if err != nil || len(docs) == 0 {
++		return nil, fmt.Errorf("parse kubeconfig")
++	}
++	root, ok := docs[0].(map[string]any)
++	if !ok {
++		return nil, fmt.Errorf("invalid kubeconfig")
++	}
++	currCtx, _ := root["current-context"].(string)
++	contexts, _ := root["contexts"].([]any)
++	clusters, _ := root["clusters"].([]any)
++	users, _ := root["users"].([]any)
++	var ctxName, clusterName, userName string
++	ctxName = currCtx
++	for _, c := range contexts {
++		cm, _ := c.(map[string]any)
++		if cm == nil {
++			continue
++		}
++		if name, _ := cm["name"].(string); name == ctxName {
++			if inner, _ := cm["context"].(map[string]any); inner != nil {
++				clusterName, _ = inner["cluster"].(string)
++				userName, _ = inner["user"].(string)
++			}
++		}
++	}
++	cfg := &restCfg{}
++	for _, c := range clusters {
++		cm, _ := c.(map[string]any)
++		if cm == nil {
++			continue
++		}
++		if name, _ := cm["name"].(string); name == clusterName || clusterName == "" {
++			if inner, _ := cm["cluster"].(map[string]any); inner != nil {
++				cfg.Server, _ = inner["server"].(string)
++				if b, ok := inner["insecure-skip-tls-verify"].(bool); ok {
++					cfg.Insecure = b
++				}
++				if s, ok := inner["certificate-authority-data"].(string); ok {
++					cfg.CA, _ = base64.StdEncoding.DecodeString(s)
++				}
++				if s, ok := inner["certificate-authority"].(string); ok {
++					cfg.CA, _ = os.ReadFile(s)
++				}
++			}
++			break
++		}
++	}
++	for _, u := range users {
++		um, _ := u.(map[string]any)
++		if um == nil {
++			continue
++		}
++		if name, _ := um["name"].(string); name == userName || userName == "" {
++			if inner, _ := um["user"].(map[string]any); inner != nil {
++				if s, ok := inner["client-certificate-data"].(string); ok {
++					cfg.Cert, _ = base64.StdEncoding.DecodeString(s)
++				}
++				if s, ok := inner["client-key-data"].(string); ok {
++					cfg.Key, _ = base64.StdEncoding.DecodeString(s)
++				}
++				if s, ok := inner["client-certificate"].(string); ok {
++					cfg.Cert, _ = os.ReadFile(s)
++				}
++				if s, ok := inner["client-key"].(string); ok {
++					cfg.Key, _ = os.ReadFile(s)
++				}
++				if s, ok := inner["token"].(string); ok {
++					cfg.Token = s
++				}
++			}
++			break
++		}
++	}
++	if cfg.Server == "" {
++		return nil, fmt.Errorf("no server in kubeconfig")
++	}
++	return cfg, nil
++}
++
++func newHTTPClient(cfg *restCfg) (*http.Client, error) {
++	tlsCfg := &tls.Config{InsecureSkipVerify: cfg.Insecure}
++	if len(cfg.CA) > 0 {
++		pool := x509.NewCertPool()
++		pool.AppendCertsFromPEM(cfg.CA)
++		tlsCfg.RootCAs = pool
++	}
++	if len(cfg.Cert) > 0 && len(cfg.Key) > 0 {
++		cert, err := tls.X509KeyPair(cfg.Cert, cfg.Key)
++		if err != nil {
++			return nil, err
++		}
++		tlsCfg.Certificates = []tls.Certificate{cert}
++	}
++	return &http.Client{
++		Timeout:   30 * time.Second,
++		Transport: &http.Transport{TLSClientConfig: tlsCfg},
++	}, nil
++}
++
++type apiClient struct {
++	cfg    *restCfg
++	http   *http.Client
++	server string
++}
++
++func newClient() *apiClient {
++	cfg, err := loadKubeconfig()
++	if err != nil {
++		die(err.Error())
++	}
++	hc, err := newHTTPClient(cfg)
++	if err != nil {
++		die(err.Error())
++	}
++	return &apiClient{cfg: cfg, http: hc, server: strings.TrimRight(cfg.Server, "/")}
++}
++
++func apiPath(kind, ns, name string) string {
++	info, ok := kindTable[kind]
++	if !ok {
++		return ""
++	}
++	var base string
++	if info.Group == "" {
++		base = "/api/" + info.Version
++	} else {
++		base = "/apis/" + info.Group + "/" + info.Version
++	}
++	if info.Namespaced {
++		if ns == "" {
++			ns = "default"
++		}
++		base += "/namespaces/" + ns
++	}
++	base += "/" + info.Plural
++	if name != "" {
++		base += "/" + name
++	}
++	return base
++}
++
++func apiListPath(kind, ns string, allNs bool) string {
++	info, ok := kindTable[kind]
++	if !ok {
++		return ""
++	}
++	var base string
++	if info.Group == "" {
++		base = "/api/" + info.Version
++	} else {
++		base = "/apis/" + info.Group + "/" + info.Version
++	}
++	if info.Namespaced && !allNs {
++		if ns == "" {
++			ns = "default"
++		}
++		base += "/namespaces/" + ns
++	}
++	base += "/" + info.Plural
++	return base
++}
++
++func (c *apiClient) do(method, path, contentType string, body []byte, query map[string]string) (int, []byte, error) {
++	u := c.server + path
++	if len(query) > 0 {
++		parts := []string{}
++		for k, v := range query {
++			parts = append(parts, k+"="+v)
++		}
++		u += "?" + strings.Join(parts, "&")
++	}
++	var reqBody io.Reader
++	if body != nil {
++		reqBody = bytes.NewReader(body)
++	}
++	req, err := http.NewRequest(method, u, reqBody)
++	if err != nil {
++		return 0, nil, err
++	}
++	if contentType != "" {
++		req.Header.Set("Content-Type", contentType)
++	}
++	req.Header.Set("Accept", "application/json")
++	if c.cfg.Token != "" {
++		req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
++	}
++	resp, err := c.http.Do(req)
++	if err != nil {
++		return 0, nil, err
++	}
++	defer resp.Body.Close()
++	data, err := io.ReadAll(resp.Body)
++	return resp.StatusCode, data, err
++}
++
++func extractMsg(body []byte) string {
++	var status struct {
++		Message string `json:"message"`
++	}
++	if err := json.Unmarshal(body, &status); err == nil && status.Message != "" {
++		return status.Message
++	}
++	return string(body)
++}
++
++func (c *apiClient) get(kind, ns, name string) map[string]any {
++	status, body, err := c.do("GET", apiPath(kind, ns, name), "", nil, nil)
++	if err != nil {
++		die(err.Error())
++	}
++	if status >= 400 {
++		errAPI(status, extractMsg(body))
++	}
++	var out map[string]any
++	json.Unmarshal(body, &out)
++	return out
++}
++
++func (c *apiClient) tryGet(kind, ns, name string) (map[string]any, int) {
++	status, body, err := c.do("GET", apiPath(kind, ns, name), "", nil, nil)
++	if err != nil {
++		die(err.Error())
++	}
++	if status >= 400 {
++		return nil, status
++	}
++	var out map[string]any
++	json.Unmarshal(body, &out)
++	return out, status
++}
++
++func (c *apiClient) list(kind, ns string, allNs bool, selector string) map[string]any {
++	q := map[string]string{}
++	if selector != "" {
++		q["labelSelector"] = selector
++	}
++	status, body, err := c.do("GET", apiListPath(kind, ns, allNs), "", nil, q)
++	if err != nil {
++		die(err.Error())
++	}
++	if status >= 400 {
++		errAPI(status, extractMsg(body))
++	}
++	var out map[string]any
++	json.Unmarshal(body, &out)
++	return out
++}
++
++func (c *apiClient) create(kind, ns string, body map[string]any, dryRun string) (int, map[string]any) {
++	data, _ := json.Marshal(body)
++	q := map[string]string{}
++	if dryRun == "server" {
++		q["dryRun"] = "All"
++	}
++	status, respBody, err := c.do("POST", apiListPath(kind, ns, false), "application/json", data, q)
++	if err != nil {
++		die(err.Error())
++	}
++	var out map[string]any
++	json.Unmarshal(respBody, &out)
++	return status, out
++}
++
++func (c *apiClient) patch(kind, ns, name, contentType string, patchBody []byte, dryRun string) (int, map[string]any) {
++	q := map[string]string{}
++	if dryRun == "server" {
++		q["dryRun"] = "All"
++	}
++	status, respBody, err := c.do("PATCH", apiPath(kind, ns, name), contentType, patchBody, q)
++	if err != nil {
++		die(err.Error())
++	}
++	var out map[string]any
++	json.Unmarshal(respBody, &out)
++	return status, out
++}
++
++func (c *apiClient) delete_(kind, ns, name string) (int, []byte) {
++	status, body, err := c.do("DELETE", apiPath(kind, ns, name), "application/json", nil, nil)
++	if err != nil {
++		die(err.Error())
++	}
++	return status, body
++}
++
++type flagSpec struct {
++	boolFlags  map[string]bool
++	valueFlags map[string]bool
++	aliases    map[string]string
++}
++
++func newFlagSpec() *flagSpec {
++	return &flagSpec{
++		boolFlags:  map[string]bool{},
++		valueFlags: map[string]bool{},
++		aliases:    map[string]string{},
++	}
++}
++
++func (f *flagSpec) bool_(names ...string) {
++	for _, n := range names {
++		f.boolFlags[n] = true
++	}
++}
++
++func (f *flagSpec) value(names ...string) {
++	for _, n := range names {
++		f.valueFlags[n] = true
++	}
++}
++
++func (f *flagSpec) alias(short, long string) {
++	f.aliases[short] = long
++}
++
++func (f *flagSpec) parse(args []string) ([]string, map[string]string, map[string][]string) {
++	pos := []string{}
++	flags := map[string]string{}
++	multi := map[string][]string{}
++	i := 0
++	for i < len(args) {
++		a := args[i]
++		if a == "--" {
++			pos = append(pos, args[i+1:]...)
++			i = len(args)
++			continue
++		}
++		if !strings.HasPrefix(a, "-") || a == "-" {
++			pos = append(pos, a)
++			i++
++			continue
++		}
++		if len(a) > 1 && (a[1] >= '0' && a[1] <= '9') {
++			pos = append(pos, a)
++			i++
++			continue
++		}
++		name := a
++		val := ""
++		hasVal := false
++		if idx := strings.Index(a, "="); idx >= 0 {
++			name = a[:idx]
++			val = a[idx+1:]
++			hasVal = true
++		}
++		key := strings.TrimLeft(name, "-")
++		if long, ok := f.aliases[key]; ok {
++			key = long
++		}
++		if f.boolFlags[key] {
++			if hasVal {
++				flags[key] = val
++			} else {
++				flags[key] = "true"
++			}
++			multi[key] = append(multi[key], flags[key])
++			i++
++			continue
++		}
++		if f.valueFlags[key] {
++			if !hasVal {
++				if i+1 >= len(args) {
++					usageErr("flag needs an argument: --" + key)
++				}
++				val = args[i+1]
++				i += 2
++			} else {
++				i++
++			}
++			flags[key] = val
++			multi[key] = append(multi[key], val)
++			continue
++		}
++		usageErr("unknown flag: " + name)
++	}
++	return pos, flags, multi
++}
++
++func loadManifests(path string) []map[string]any {
++	if _, err := os.Stat(path); err != nil {
++		notFoundErr(fmt.Sprintf("the path %q does not exist: not found", path))
++	}
++	data, err := os.ReadFile(path)
++	if err != nil {
++		notFoundErr(err.Error())
++	}
++	docs, err := parseYAMLAll(string(data))
++	if err != nil {
++		notFoundErr(err.Error())
++	}
++	out := []map[string]any{}
++	for _, d := range docs {
++		if m, ok := d.(map[string]any); ok && len(m) > 0 {
++			out = append(out, m)
++		}
++	}
++	return out
++}
++
++func manifestNS(m map[string]any, override string) string {
++	if override != "" {
++		return override
++	}
++	meta, _ := m["metadata"].(map[string]any)
++	if meta == nil {
++		return "default"
++	}
++	if ns, ok := meta["namespace"].(string); ok && ns != "" {
++		return ns
++	}
++	return "default"
++}
++
++func manifestName(m map[string]any) string {
++	meta, _ := m["metadata"].(map[string]any)
++	if meta == nil {
++		return ""
++	}
++	name, _ := meta["name"].(string)
++	return name
++}
++
++func manifestKind(m map[string]any) string {
++	k, _ := m["kind"].(string)
++	return k
++}
++
++func cmdApply(args []string) {
++	spec := newFlagSpec()
++	spec.value("filename", "namespace", "dry-run")
++	spec.bool_("force", "recursive")
++	spec.alias("f", "filename")
++	spec.alias("n", "namespace")
++	spec.alias("R", "recursive")
++	_, flags, _ := spec.parse(args)
++	path, ok := flags["filename"]
++	if !ok || path == "" {
++		die("must specify -f")
++	}
++	nsFlag := flags["namespace"]
++	dryRun := flags["dry-run"]
++	if dryRun == "true" {
++		dryRun = "client"
++	}
++	c := newClient()
++	manifests := loadManifests(path)
++	for _, m := range manifests {
++		kind := manifestKind(m)
++		if kind == "" {
++			continue
++		}
++		name := manifestName(m)
++		info, ok := getAPI(kind)
++		if !ok {
++			die(fmt.Sprintf("unknown kind %q", kind))
++		}
++		ns := ""
++		if info.Namespaced {
++			ns = manifestNS(m, nsFlag)
++		}
++		rlabel := resourceRepr(kind)
++		if dryRun == "client" {
++			fmt.Printf("%s/%s created (dry run)\n", rlabel, name)
++			continue
++		}
++		status, _ := c.create(kind, ns, m, dryRun)
++		switch {
++		case status < 300:
++			suffix := ""
++			if dryRun == "server" {
++				suffix = " (dry run)"
++			}
++			fmt.Printf("%s/%s created%s\n", rlabel, name, suffix)
++		case status == 409:
++			data, _ := json.Marshal(m)
++			pStatus, _ := c.patch(kind, ns, name, "application/merge-patch+json", data, dryRun)
++			if pStatus >= 400 {
++				errAPI(pStatus, "patch failed")
++			}
++			suffix := ""
++			if dryRun == "server" {
++				suffix = " (dry run)"
++			}
++			fmt.Printf("%s/%s configured%s\n", rlabel, name, suffix)
++		default:
++			errAPI(status, "apply failed")
++		}
++	}
++}
++
++func cmdCreate(args []string) {
++	for _, a := range args {
++		if a == "-f" || a == "--filename" || strings.HasPrefix(a, "-f=") || strings.HasPrefix(a, "--filename=") {
++			cmdCreateFile(args)
++			return
++		}
++	}
++	if len(args) < 1 {
++		usageErr("must specify create type")
++	}
++	sub := args[0]
++	rest := args[1:]
++	switch sub {
++	case "namespace", "ns":
++		createNamespace(rest)
++	case "configmap", "cm":
++		createConfigMap(rest)
++	case "secret":
++		createSecret(rest)
++	case "serviceaccount", "sa":
++		createServiceAccount(rest)
++	case "job":
++		createJob(rest)
++	case "deployment", "deploy":
++		createDeployment(rest)
++	case "service", "svc":
++		createService(rest)
++	case "role":
++		createRole(rest)
++	case "clusterrole":
++		createClusterRole(rest)
++	case "rolebinding":
++		createRoleBinding(rest)
++	case "clusterrolebinding":
++		createClusterRoleBinding(rest)
++	case "resourcequota", "quota":
++		createResourceQuota(rest)
++	case "poddisruptionbudget", "pdb":
++		createPDB(rest)
++	case "priorityclass", "pc":
++		createPriorityClass(rest)
++	case "limitrange":
++		createLimitRange(rest)
++	case "ingress", "ing":
++		createIngress(rest)
++	default:
++		die(fmt.Sprintf("unknown create type %q", sub))
++	}
++}
++
++func cmdCreateFile(args []string) {
++	spec := newFlagSpec()
++	spec.value("filename", "namespace", "dry-run")
++	spec.bool_("recursive")
++	spec.alias("f", "filename")
++	spec.alias("n", "namespace")
++	spec.alias("R", "recursive")
++	_, flags, _ := spec.parse(args)
++	path := flags["filename"]
++	if path == "" {
++		die("must specify -f")
++	}
++	nsFlag := flags["namespace"]
++	dryRun := flags["dry-run"]
++	if dryRun == "true" {
++		dryRun = "client"
++	}
++	c := newClient()
++	for _, m := range loadManifests(path) {
++		kind := manifestKind(m)
++		name := manifestName(m)
++		info, ok := getAPI(kind)
++		if !ok {
++			die(fmt.Sprintf("unknown kind %q", kind))
++		}
++		ns := ""
++		if info.Namespaced {
++			ns = manifestNS(m, nsFlag)
++		}
++		rlabel := resourceRepr(kind)
++		if dryRun == "client" {
++			fmt.Printf("%s/%s created (dry run)\n", rlabel, name)
++			continue
++		}
++		status, _ := c.create(kind, ns, m, dryRun)
++		if status >= 400 {
++			errAPI(status, "create failed")
++		}
++		suffix := ""
++		if dryRun == "server" {
++			suffix = " (dry run)"
++		}
++		fmt.Printf("%s/%s created%s\n", rlabel, name, suffix)
++	}
++}
++
++type createOpts struct {
++	Name    string
++	NS      string
++	DryRun  string
++	Opts    map[string][]string
++	Args    []string
++}
++
++func parseCreateFlags(args []string, extraVal []string, extraBool []string) createOpts {
++	spec := newFlagSpec()
++	spec.value(append([]string{"namespace", "dry-run"}, extraVal...)...)
++	spec.bool_(extraBool...)
++	spec.alias("n", "namespace")
++	pos, flags, multi := spec.parse(args)
++	if len(pos) < 1 {
++		usageErr("NAME is required")
++	}
++	dr := flags["dry-run"]
++	if dr == "true" {
++		dr = "client"
++	}
++	return createOpts{
++		Name:   pos[0],
++		NS:     flags["namespace"],
++		DryRun: dr,
++		Opts:   multi,
++		Args:   pos,
++	}
++}
++
++func submitCreate(kind string, body map[string]any, opts createOpts) {
++	rlabel := resourceRepr(kind)
++	info, _ := getAPI(kind)
++	ns := ""
++	if info.Namespaced {
++		ns = opts.NS
++		if ns == "" {
++			ns = "default"
++		}
++	}
++	if opts.DryRun == "client" {
++		fmt.Printf("%s/%s created (dry run)\n", rlabel, opts.Name)
++		return
++	}
++	c := newClient()
++	status, _ := c.create(kind, ns, body, opts.DryRun)
++	if status >= 400 {
++		errAPI(status, "create failed")
++	}
++	suffix := ""
++	if opts.DryRun == "server" {
++		suffix = " (dry run)"
++	}
++	fmt.Printf("%s/%s created%s\n", rlabel, opts.Name, suffix)
++}
++
++func createNamespace(args []string) {
++	opts := parseCreateFlags(args, nil, nil)
++	body := map[string]any{
++		"apiVersion": "v1",
++		"kind":       "Namespace",
++		"metadata":   map[string]any{"name": opts.Name},
++	}
++	submitCreate("Namespace", body, opts)
++}
++
++func createConfigMap(args []string) {
++	opts := parseCreateFlags(args, []string{"from-literal", "from-file"}, nil)
++	data := map[string]any{}
++	for _, lit := range opts.Opts["from-literal"] {
++		idx := strings.Index(lit, "=")
++		if idx <= 0 {
++			usageErr(fmt.Sprintf("invalid literal source %q, expected key=value", lit))
++		}
++		data[lit[:idx]] = lit[idx+1:]
++	}
++	for _, fl := range opts.Opts["from-file"] {
++		k := fl
++		path := fl
++		if idx := strings.Index(fl, "="); idx > 0 {
++			k = fl[:idx]
++			path = fl[idx+1:]
++		} else {
++			k = filepath.Base(path)
++		}
++		content, err := os.ReadFile(path)
++		if err == nil {
++			data[k] = string(content)
++		}
++	}
++	body := map[string]any{
++		"apiVersion": "v1",
++		"kind":       "ConfigMap",
++		"metadata":   map[string]any{"name": opts.Name},
++		"data":       data,
++	}
++	submitCreate("ConfigMap", body, opts)
++}
++
++func createSecret(args []string) {
++	if len(args) < 1 {
++		usageErr("must specify secret subtype")
++	}
++	sub := args[0]
++	rest := args[1:]
++	switch sub {
++	case "generic":
++		createSecretGeneric(rest)
++	case "docker-registry":
++		createSecretDocker(rest)
++	case "tls":
++		createSecretTLS(rest)
++	default:
++		die(fmt.Sprintf("unknown secret subtype %q", sub))
++	}
++}
++
++func createSecretGeneric(args []string) {
++	opts := parseCreateFlags(args, []string{"from-literal", "from-file", "type"}, nil)
++	data := map[string]any{}
++	for _, lit := range opts.Opts["from-literal"] {
++		idx := strings.Index(lit, "=")
++		if idx <= 0 {
++			usageErr(fmt.Sprintf("invalid literal source %q, expected key=value", lit))
++		}
++		data[lit[:idx]] = base64.StdEncoding.EncodeToString([]byte(lit[idx+1:]))
++	}
++	for _, fl := range opts.Opts["from-file"] {
++		k := fl
++		path := fl
++		if idx := strings.Index(fl, "="); idx > 0 {
++			k = fl[:idx]
++			path = fl[idx+1:]
++		} else {
++			k = filepath.Base(path)
++		}
++		content, err := os.ReadFile(path)
++		if err == nil {
++			data[k] = base64.StdEncoding.EncodeToString(content)
++		}
++	}
++	stype := "Opaque"
++	if t := opts.Opts["type"]; len(t) > 0 {
++		stype = t[0]
++	}
++	body := map[string]any{
++		"apiVersion": "v1",
++		"kind":       "Secret",
++		"metadata":   map[string]any{"name": opts.Name},
++		"type":       stype,
++		"data":       data,
++	}
++	submitCreate("Secret", body, opts)
++}
++
++func createSecretDocker(args []string) {
++	opts := parseCreateFlags(args, []string{"docker-server", "docker-username", "docker-password", "docker-email"}, nil)
++	server := firstOrDefault(opts.Opts["docker-server"], "https://index.docker.io/v1/")
++	user := firstOrDefault(opts.Opts["docker-username"], "")
++	pw := firstOrDefault(opts.Opts["docker-password"], "")
++	email := firstOrDefault(opts.Opts["docker-email"], "")
++	auth := base64.StdEncoding.EncodeToString([]byte(user + ":" + pw))
++	dockerCfg := map[string]any{
++		"auths": map[string]any{
++			server: map[string]any{
++				"username": user,
++				"password": pw,
++				"email":    email,
++				"auth":     auth,
++			},
++		},
++	}
++	dj, _ := json.Marshal(dockerCfg)
++	body := map[string]any{
++		"apiVersion": "v1",
++		"kind":       "Secret",
++		"metadata":   map[string]any{"name": opts.Name},
++		"type":       "kubernetes.io/dockerconfigjson",
++		"data": map[string]any{
++			".dockerconfigjson": base64.StdEncoding.EncodeToString(dj),
++		},
++	}
++	submitCreate("Secret", body, opts)
++}
++
++func createSecretTLS(args []string) {
++	opts := parseCreateFlags(args, []string{"cert", "key"}, nil)
++	certPath := firstOrDefault(opts.Opts["cert"], "")
++	keyPath := firstOrDefault(opts.Opts["key"], "")
++	certData, _ := os.ReadFile(certPath)
++	keyData, _ := os.ReadFile(keyPath)
++	body := map[string]any{
++		"apiVersion": "v1",
++		"kind":       "Secret",
++		"metadata":   map[string]any{"name": opts.Name},
++		"type":       "kubernetes.io/tls",
++		"data": map[string]any{
++			"tls.crt": base64.StdEncoding.EncodeToString(certData),
++			"tls.key": base64.StdEncoding.EncodeToString(keyData),
++		},
++	}
++	submitCreate("Secret", body, opts)
++}
++
++func firstOrDefault(v []string, def string) string {
++	if len(v) > 0 {
++		return v[0]
++	}
++	return def
++}
++
++func createServiceAccount(args []string) {
++	opts := parseCreateFlags(args, nil, nil)
++	body := map[string]any{
++		"apiVersion": "v1",
++		"kind":       "ServiceAccount",
++		"metadata":   map[string]any{"name": opts.Name},
++	}
++	submitCreate("ServiceAccount", body, opts)
++}
++
++func createJob(args []string) {
++	opts := parseCreateFlags(args, []string{"image"}, nil)
++	image := firstOrDefault(opts.Opts["image"], "busybox")
++	body := map[string]any{
++		"apiVersion": "batch/v1",
++		"kind":       "Job",
++		"metadata":   map[string]any{"name": opts.Name},
++		"spec": map[string]any{
++			"template": map[string]any{
++				"spec": map[string]any{
++					"containers": []any{
++						map[string]any{"name": opts.Name, "image": image},
++					},
++					"restartPolicy": "Never",
++				},
++			},
++		},
++	}
++	submitCreate("Job", body, opts)
++}
++
++func createDeployment(args []string) {
++	opts := parseCreateFlags(args, []string{"image", "replicas"}, nil)
++	image := firstOrDefault(opts.Opts["image"], "nginx")
++	replicas := int64(1)
++	if r := firstOrDefault(opts.Opts["replicas"], ""); r != "" {
++		if n, err := strconv.ParseInt(r, 10, 64); err == nil {
++			replicas = n
++		}
++	}
++	body := map[string]any{
++		"apiVersion": "apps/v1",
++		"kind":       "Deployment",
++		"metadata":   map[string]any{"name": opts.Name, "labels": map[string]any{"app": opts.Name}},
++		"spec": map[string]any{
++			"replicas": replicas,
++			"selector": map[string]any{"matchLabels": map[string]any{"app": opts.Name}},
++			"template": map[string]any{
++				"metadata": map[string]any{"labels": map[string]any{"app": opts.Name}},
++				"spec": map[string]any{
++					"containers": []any{
++						map[string]any{"name": opts.Name, "image": image},
++					},
++				},
++			},
++		},
++	}
++	submitCreate("Deployment", body, opts)
++}
++
++func createService(args []string) {
++	if len(args) < 1 {
++		usageErr("must specify service subtype")
++	}
++	sub := args[0]
++	rest := args[1:]
++	opts := parseCreateFlags(rest, []string{"tcp", "external-name", "node-port"}, nil)
++	typeMap := map[string]string{
++		"clusterip":    "ClusterIP",
++		"nodeport":     "NodePort",
++		"loadbalancer": "LoadBalancer",
++		"externalname": "ExternalName",
++	}
++	stype, ok := typeMap[sub]
++	if !ok {
++		die(fmt.Sprintf("unknown service subtype %q", sub))
++	}
++	spec := map[string]any{"type": stype}
++	if sub == "externalname" {
++		spec["externalName"] = firstOrDefault(opts.Opts["external-name"], "")
++	} else {
++		ports := []any{}
++		for _, tcp := range opts.Opts["tcp"] {
++			parts := strings.SplitN(tcp, ":", 2)
++			p, _ := strconv.Atoi(parts[0])
++			tp := p
++			if len(parts) == 2 {
++				tp, _ = strconv.Atoi(parts[1])
++			}
++			ports = append(ports, map[string]any{"port": p, "targetPort": tp, "protocol": "TCP"})
++		}
++		spec["ports"] = ports
++		spec["selector"] = map[string]any{"app": opts.Name}
++	}
++	body := map[string]any{
++		"apiVersion": "v1",
++		"kind":       "Service",
++		"metadata":   map[string]any{"name": opts.Name},
++		"spec":       spec,
++	}
++	submitCreate("Service", body, opts)
++}
++
++func createRole(args []string) {
++	opts := parseCreateFlags(args, []string{"verb", "resource"}, nil)
++	verbs := commaSplit(opts.Opts["verb"])
++	resources := commaSplit(opts.Opts["resource"])
++	body := map[string]any{
++		"apiVersion": "rbac.authorization.k8s.io/v1",
++		"kind":       "Role",
++		"metadata":   map[string]any{"name": opts.Name},
++		"rules": []any{
++			map[string]any{
++				"apiGroups": []any{""},
++				"resources": toAny(resources),
++				"verbs":     toAny(verbs),
++			},
++		},
++	}
++	submitCreate("Role", body, opts)
++}
++
++func createClusterRole(args []string) {
++	opts := parseCreateFlags(args, []string{"verb", "resource"}, nil)
++	verbs := commaSplit(opts.Opts["verb"])
++	resources := commaSplit(opts.Opts["resource"])
++	body := map[string]any{
++		"apiVersion": "rbac.authorization.k8s.io/v1",
++		"kind":       "ClusterRole",
++		"metadata":   map[string]any{"name": opts.Name},
++		"rules": []any{
++			map[string]any{
++				"apiGroups": []any{""},
++				"resources": toAny(resources),
++				"verbs":     toAny(verbs),
++			},
++		},
++	}
++	submitCreate("ClusterRole", body, opts)
++}
++
++func createRoleBinding(args []string) {
++	opts := parseCreateFlags(args, []string{"role", "clusterrole", "user", "group", "serviceaccount"}, nil)
++	roleName := firstOrDefault(opts.Opts["role"], "")
++	crName := firstOrDefault(opts.Opts["clusterrole"], "")
++	roleRef := map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": roleName}
++	if crName != "" {
++		roleRef = map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": crName}
++	}
++	subjects := []any{}
++	for _, u := range opts.Opts["user"] {
++		subjects = append(subjects, map[string]any{"kind": "User", "name": u, "apiGroup": "rbac.authorization.k8s.io"})
++	}
++	for _, g := range opts.Opts["group"] {
++		subjects = append(subjects, map[string]any{"kind": "Group", "name": g, "apiGroup": "rbac.authorization.k8s.io"})
++	}
++	for _, sa := range opts.Opts["serviceaccount"] {
++		parts := strings.SplitN(sa, ":", 2)
++		ns, name := "default", sa
++		if len(parts) == 2 {
++			ns, name = parts[0], parts[1]
++		}
++		subjects = append(subjects, map[string]any{"kind": "ServiceAccount", "name": name, "namespace": ns})
++	}
++	body := map[string]any{
++		"apiVersion": "rbac.authorization.k8s.io/v1",
++		"kind":       "RoleBinding",
++		"metadata":   map[string]any{"name": opts.Name},
++		"roleRef":    roleRef,
++		"subjects":   subjects,
++	}
++	submitCreate("RoleBinding", body, opts)
++}
++
++func createClusterRoleBinding(args []string) {
++	opts := parseCreateFlags(args, []string{"clusterrole", "user", "group", "serviceaccount"}, nil)
++	crName := firstOrDefault(opts.Opts["clusterrole"], "")
++	subjects := []any{}
++	for _, u := range opts.Opts["user"] {
++		subjects = append(subjects, map[string]any{"kind": "User", "name": u, "apiGroup": "rbac.authorization.k8s.io"})
++	}
++	for _, g := range opts.Opts["group"] {
++		subjects = append(subjects, map[string]any{"kind": "Group", "name": g, "apiGroup": "rbac.authorization.k8s.io"})
++	}
++	for _, sa := range opts.Opts["serviceaccount"] {
++		parts := strings.SplitN(sa, ":", 2)
++		ns, name := "default", sa
++		if len(parts) == 2 {
++			ns, name = parts[0], parts[1]
++		}
++		subjects = append(subjects, map[string]any{"kind": "ServiceAccount", "name": name, "namespace": ns})
++	}
++	body := map[string]any{
++		"apiVersion": "rbac.authorization.k8s.io/v1",
++		"kind":       "ClusterRoleBinding",
++		"metadata":   map[string]any{"name": opts.Name},
++		"roleRef":    map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": crName},
++		"subjects":   subjects,
++	}
++	submitCreate("ClusterRoleBinding", body, opts)
++}
++
++func createResourceQuota(args []string) {
++	opts := parseCreateFlags(args, []string{"hard"}, nil)
++	hard := map[string]any{}
++	for _, entry := range opts.Opts["hard"] {
++		for _, kv := range strings.Split(entry, ",") {
++			if idx := strings.Index(kv, "="); idx > 0 {
++				hard[strings.TrimSpace(kv[:idx])] = strings.TrimSpace(kv[idx+1:])
++			}
++		}
++	}
++	body := map[string]any{
++		"apiVersion": "v1",
++		"kind":       "ResourceQuota",
++		"metadata":   map[string]any{"name": opts.Name},
++		"spec":       map[string]any{"hard": hard},
++	}
++	submitCreate("ResourceQuota", body, opts)
++}
++
++func createPDB(args []string) {
++	opts := parseCreateFlags(args, []string{"min-available", "max-unavailable", "selector"}, nil)
++	spec := map[string]any{}
++	if v := firstOrDefault(opts.Opts["min-available"], ""); v != "" {
++		if n, err := strconv.Atoi(v); err == nil {
++			spec["minAvailable"] = n
++		} else {
++			spec["minAvailable"] = v
++		}
++	}
++	if v := firstOrDefault(opts.Opts["max-unavailable"], ""); v != "" {
++		if n, err := strconv.Atoi(v); err == nil {
++			spec["maxUnavailable"] = n
++		} else {
++			spec["maxUnavailable"] = v
++		}
++	}
++	sel := map[string]any{}
++	for _, s := range opts.Opts["selector"] {
++		for _, kv := range strings.Split(s, ",") {
++			if idx := strings.Index(kv, "="); idx > 0 {
++				sel[strings.TrimSpace(kv[:idx])] = strings.TrimSpace(kv[idx+1:])
++			}
++		}
++	}
++	spec["selector"] = map[string]any{"matchLabels": sel}
++	body := map[string]any{
++		"apiVersion": "policy/v1",
++		"kind":       "PodDisruptionBudget",
++		"metadata":   map[string]any{"name": opts.Name},
++		"spec":       spec,
++	}
++	submitCreate("PodDisruptionBudget", body, opts)
++}
++
++func createPriorityClass(args []string) {
++	opts := parseCreateFlags(args, []string{"value", "description"}, []string{"global-default"})
++	val := int64(0)
++	if v := firstOrDefault(opts.Opts["value"], ""); v != "" {
++		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
++			val = n
++		}
++	}
++	body := map[string]any{
++		"apiVersion":  "scheduling.k8s.io/v1",
++		"kind":        "PriorityClass",
++		"metadata":    map[string]any{"name": opts.Name},
++		"value":       val,
++		"description": firstOrDefault(opts.Opts["description"], ""),
++	}
++	submitCreate("PriorityClass", body, opts)
++}
++
++func createLimitRange(args []string) {
++	opts := parseCreateFlags(args, nil, nil)
++	body := map[string]any{
++		"apiVersion": "v1",
++		"kind":       "LimitRange",
++		"metadata":   map[string]any{"name": opts.Name},
++		"spec": map[string]any{
++			"limits": []any{
++				map[string]any{
++					"type":    "Container",
++					"default": map[string]any{"cpu": "500m", "memory": "512Mi"},
++					"defaultRequest": map[string]any{"cpu": "100m", "memory": "128Mi"},
++				},
++			},
++		},
++	}
++	submitCreate("LimitRange", body, opts)
++}
++
++func createIngress(args []string) {
++	opts := parseCreateFlags(args, []string{"rule", "class"}, nil)
++	rules := []any{}
++	for _, r := range opts.Opts["rule"] {
++		host := ""
++		pathPart := r
++		if idx := strings.Index(r, "/"); idx >= 0 {
++			host = r[:idx]
++			pathPart = r[idx:]
++		}
++		pth := pathPart
++		svc := ""
++		port := 80
++		if idx := strings.Index(pathPart, "="); idx > 0 {
++			pth = pathPart[:idx]
++			svcPort := pathPart[idx+1:]
++			if pidx := strings.Index(svcPort, ":"); pidx > 0 {
++				svc = svcPort[:pidx]
++				port, _ = strconv.Atoi(svcPort[pidx+1:])
++			} else {
++				svc = svcPort
++			}
++		}
++		rule := map[string]any{}
++		if host != "" {
++			rule["host"] = host
++		}
++		rule["http"] = map[string]any{
++			"paths": []any{
++				map[string]any{
++					"path":     pth,
++					"pathType": "Prefix",
++					"backend": map[string]any{
++						"service": map[string]any{
++							"name": svc,
++							"port": map[string]any{"number": port},
++						},
++					},
++				},
++			},
++		}
++		rules = append(rules, rule)
++	}
++	spec := map[string]any{"rules": rules}
++	if cls := firstOrDefault(opts.Opts["class"], ""); cls != "" {
++		spec["ingressClassName"] = cls
++	}
++	body := map[string]any{
++		"apiVersion": "networking.k8s.io/v1",
++		"kind":       "Ingress",
++		"metadata":   map[string]any{"name": opts.Name},
++		"spec":       spec,
++	}
++	submitCreate("Ingress", body, opts)
++}
++
++func commaSplit(entries []string) []string {
++	out := []string{}
++	for _, e := range entries {
++		for _, p := range strings.Split(e, ",") {
++			p = strings.TrimSpace(p)
++			if p != "" {
++				out = append(out, p)
++			}
++		}
++	}
++	return out
++}
++
++func toAny(s []string) []any {
++	out := make([]any, len(s))
++	for i, v := range s {
++		out[i] = v
++	}
++	return out
++}
++
++func cmdDelete(args []string) {
++	spec := newFlagSpec()
++	spec.value("filename", "namespace", "selector", "grace-period")
++	spec.bool_("all", "force", "now", "wait", "ignore-not-found", "all-namespaces")
++	spec.alias("f", "filename")
++	spec.alias("n", "namespace")
++	spec.alias("l", "selector")
++	spec.alias("A", "all-namespaces")
++	pos, flags, _ := spec.parse(args)
++	c := newClient()
++	if path := flags["filename"]; path != "" {
++		for _, m := range loadManifests(path) {
++			kind := manifestKind(m)
++			name := manifestName(m)
++			info, _ := getAPI(kind)
++			ns := ""
++			if info.Namespaced {
++				ns = manifestNS(m, flags["namespace"])
++			}
++			status, body := c.delete_(kind, ns, name)
++			if status == 404 && flags["ignore-not-found"] == "true" {
++				continue
++			}
++			if status >= 400 {
++				errAPI(status, extractMsg(body))
++			}
++			fmt.Printf("%s %q deleted\n", strings.ToLower(kind), name)
++		}
++		return
++	}
++	if len(pos) < 1 {
++		die("You must provide one or more resources")
++	}
++	rtype := pos[0]
++	kind := resolveKind(rtype)
++	if _, ok := getAPI(kind); !ok {
++		die(fmt.Sprintf("the server doesn't have a resource type %q: NotFound", rtype))
++	}
++	names := pos[1:]
++	sel := flags["selector"]
++	if sel != "" || flags["all"] == "true" {
++		list := c.list(kind, flags["namespace"], flags["all-namespaces"] == "true", sel)
++		items, _ := list["items"].([]any)
++		for _, it := range items {
++			m, _ := it.(map[string]any)
++			name := manifestName(m)
++			ns := manifestNS(m, flags["namespace"])
++			status, body := c.delete_(kind, ns, name)
++			if status == 404 && flags["ignore-not-found"] == "true" {
++				continue
++			}
++			if status >= 400 {
++				errAPI(status, extractMsg(body))
++			}
++			fmt.Printf("%s %q deleted\n", strings.ToLower(kind), name)
++		}
++		return
++	}
++	for _, name := range names {
++		status, body := c.delete_(kind, flags["namespace"], name)
++		if status == 404 && flags["ignore-not-found"] == "true" {
++			continue
++		}
++		if status >= 400 {
++			errAPI(status, extractMsg(body))
++		}
++		fmt.Printf("%s %q deleted\n", strings.ToLower(kind), name)
++	}
++}
++
++func cmdGet(args []string) {
++	spec := newFlagSpec()
++	spec.value("namespace", "output", "selector")
++	spec.bool_("all-namespaces", "watch")
++	spec.alias("n", "namespace")
++	spec.alias("o", "output")
++	spec.alias("l", "selector")
++	spec.alias("A", "all-namespaces")
++	spec.alias("w", "watch")
++	pos, flags, _ := spec.parse(args)
++	if len(pos) < 1 {
++		usageErr("resource type required")
++	}
++	rtype := pos[0]
++	kind := resolveKind(rtype)
++	if _, ok := getAPI(kind); !ok {
++		die(fmt.Sprintf("the server doesn't have a resource type %q: NotFound", rtype))
++	}
++	names := pos[1:]
++	c := newClient()
++	output := flags["output"]
++	allNs := flags["all-namespaces"] == "true"
++	var items []any
++	if len(names) > 0 {
++		for _, n := range names {
++			obj, status := c.tryGet(kind, flags["namespace"], n)
++			if status >= 400 {
++				errAPI(status, "not found")
++			}
++			items = append(items, obj)
++		}
++	} else {
++		list := c.list(kind, flags["namespace"], allNs, flags["selector"])
++		items, _ = list["items"].([]any)
++	}
++	switch {
++	case output == "json":
++		if len(names) == 1 {
++			data, _ := json.MarshalIndent(items[0], "", "  ")
++			fmt.Println(string(data))
++		} else {
++			listObj := map[string]any{"apiVersion": "v1", "kind": "List", "items": items}
++			data, _ := json.MarshalIndent(listObj, "", "  ")
++			fmt.Println(string(data))
++		}
++	case output == "yaml":
++		if len(names) == 1 {
++			fmt.Print(emitYAML(items[0]))
++		} else {
++			listObj := map[string]any{"apiVersion": "v1", "kind": "List", "items": items}
++			fmt.Print(emitYAML(listObj))
++		}
++	case output == "name":
++		for _, it := range items {
++			m, _ := it.(map[string]any)
++			fmt.Printf("%s/%s\n", resourceRepr(kind), manifestName(m))
++		}
++	case strings.HasPrefix(output, "jsonpath"):
++		expr := ""
++		if idx := strings.Index(output, "="); idx > 0 {
++			expr = output[idx+1:]
++		}
++		expr = strings.TrimPrefix(expr, "{")
++		expr = strings.TrimSuffix(expr, "}")
++		for _, it := range items {
++			fmt.Println(jsonpathEval(it, expr))
++		}
++	default:
++		printTable(kind, items, allNs)
++	}
++}
++
++func jsonpathEval(v any, path string) string {
++	cur := v
++	path = strings.TrimPrefix(path, ".")
++	for _, seg := range strings.Split(path, ".") {
++		if seg == "" {
++			continue
++		}
++		if m, ok := cur.(map[string]any); ok {
++			cur = m[seg]
++		} else {
++			return ""
++		}
++	}
++	if cur == nil {
++		return ""
++	}
++	if s, ok := cur.(string); ok {
++		return s
++	}
++	b, _ := json.Marshal(cur)
++	return string(b)
++}
++
++func printTable(kind string, items []any, allNs bool) {
++	if kind == "Pod" {
++		if allNs {
++			fmt.Println("NAMESPACE  NAME  READY  STATUS  RESTARTS  AGE")
++		} else {
++			fmt.Println("NAME  READY  STATUS  RESTARTS  AGE")
++		}
++		for _, it := range items {
++			m, _ := it.(map[string]any)
++			name := manifestName(m)
++			ns := manifestNS(m, "")
++			status := "Running"
++			restarts := "0"
++			if s, ok := m["status"].(map[string]any); ok {
++				if p, ok := s["phase"].(string); ok {
++					status = p
++				}
++			}
++			age := ageOf(m)
++			if allNs {
++				fmt.Printf("%s  %s  1/1  %s  %s  %s\n", ns, name, status, restarts, age)
++			} else {
++				fmt.Printf("%s  1/1  %s  %s  %s\n", name, status, restarts, age)
++			}
++		}
++		return
++	}
++	if allNs {
++		fmt.Println("NAMESPACE  NAME  AGE")
++	} else {
++		fmt.Println("NAME  AGE")
++	}
++	for _, it := range items {
++		m, _ := it.(map[string]any)
++		name := manifestName(m)
++		age := ageOf(m)
++		if allNs {
++			ns := manifestNS(m, "")
++			fmt.Printf("%s  %s  %s\n", ns, name, age)
++		} else {
++			fmt.Printf("%s  %s\n", name, age)
++		}
++	}
++}
++
++func ageOf(m map[string]any) string {
++	meta, _ := m["metadata"].(map[string]any)
++	if meta == nil {
++		return "<unknown>"
++	}
++	ts, _ := meta["creationTimestamp"].(string)
++	if ts == "" {
++		return "<unknown>"
++	}
++	t, err := time.Parse(time.RFC3339, ts)
++	if err != nil {
++		return "<unknown>"
++	}
++	d := time.Since(t)
++	if d < time.Minute {
++		return fmt.Sprintf("%ds", int(d.Seconds()))
++	}
++	if d < time.Hour {
++		return fmt.Sprintf("%dm", int(d.Minutes()))
++	}
++	if d < 24*time.Hour {
++		return fmt.Sprintf("%dh", int(d.Hours()))
++	}
++	return fmt.Sprintf("%dd", int(d.Hours()/24))
++}
++
++func cmdDescribe(args []string) {
++	spec := newFlagSpec()
++	spec.value("namespace", "selector", "filename")
++	spec.bool_("show-events", "all-namespaces")
++	spec.alias("n", "namespace")
++	spec.alias("l", "selector")
++	spec.alias("A", "all-namespaces")
++	spec.alias("f", "filename")
++	pos, flags, _ := spec.parse(args)
++	if len(pos) < 1 {
++		usageErr("resource type required")
++	}
++	rtype := pos[0]
++	kind := resolveKind(rtype)
++	if _, ok := getAPI(kind); !ok {
++		die(fmt.Sprintf("unknown resource type %q", rtype))
++	}
++	c := newClient()
++	var items []any
++	if len(pos) > 1 {
++		for _, n := range pos[1:] {
++			obj, status := c.tryGet(kind, flags["namespace"], n)
++			if status >= 400 {
++				errAPI(status, "not found")
++			}
++			items = append(items, obj)
++		}
++	} else {
++		list := c.list(kind, flags["namespace"], flags["all-namespaces"] == "true", flags["selector"])
++		items, _ = list["items"].([]any)
++	}
++	for _, it := range items {
++		describeOne(it.(map[string]any))
++	}
++}
++
++func describeOne(m map[string]any) {
++	name := manifestName(m)
++	ns := manifestNS(m, "")
++	meta, _ := m["metadata"].(map[string]any)
++	labels := "<none>"
++	annos := "<none>"
++	if meta != nil {
++		if lm, ok := meta["labels"].(map[string]any); ok && len(lm) > 0 {
++			labels = mapToKV(lm)
++		}
++		if am, ok := meta["annotations"].(map[string]any); ok && len(am) > 0 {
++			annos = mapToKV(am)
++		}
++	}
++	status := "Active"
++	if s, ok := m["status"].(map[string]any); ok {
++		if p, ok := s["phase"].(string); ok {
++			status = p
++		}
++	}
++	fmt.Printf("Name:         %s\n", name)
++	fmt.Printf("Namespace:    %s\n", ns)
++	fmt.Printf("Labels:       %s\n", labels)
++	fmt.Printf("Annotations:  %s\n", annos)
++	fmt.Printf("Status:       %s\n", status)
++	fmt.Printf("Events:       <none>\n")
++}
++
++func mapToKV(m map[string]any) string {
++	keys := make([]string, 0, len(m))
++	for k := range m {
++		keys = append(keys, k)
++	}
++	sort.Strings(keys)
++	parts := []string{}
++	for _, k := range keys {
++		v, _ := m[k].(string)
++		parts = append(parts, k+"="+v)
++	}
++	return strings.Join(parts, ",")
++}
++
++func cmdPatch(args []string) {
++	spec := newFlagSpec()
++	spec.value("namespace", "patch", "type", "dry-run")
++	spec.alias("n", "namespace")
++	spec.alias("p", "patch")
++	pos, flags, _ := spec.parse(args)
++	if len(pos) < 2 {
++		usageErr("TYPE and NAME are required")
++	}
++	patchBody := flags["patch"]
++	if patchBody == "" {
++		usageErr("--patch is required")
++	}
++	ptype := flags["type"]
++	if ptype == "" {
++		ptype = "merge"
++	}
++	ct := ""
++	switch ptype {
++	case "merge":
++		ct = "application/merge-patch+json"
++	case "strategic":
++		ct = "application/strategic-merge-patch+json"
++	case "json":
++		ct = "application/json-patch+json"
++	default:
++		usageErr(fmt.Sprintf("unknown patch type %q", ptype))
++	}
++	var tmp any
++	if err := json.Unmarshal([]byte(patchBody), &tmp); err != nil {
++		usageErr("unable to parse patch")
++	}
++	dryRun := flags["dry-run"]
++	if dryRun == "true" {
++		dryRun = "client"
++	}
++	kind := resolveKind(pos[0])
++	name := pos[1]
++	rlabel := resourceRepr(kind)
++	if dryRun == "client" {
++		fmt.Printf("%s/%s patched (dry run)\n", rlabel, name)
++		return
++	}
++	c := newClient()
++	status, _ := c.patch(kind, flags["namespace"], name, ct, []byte(patchBody), dryRun)
++	if status >= 400 {
++		errAPI(status, "patch failed")
++	}
++	suffix := ""
++	if dryRun == "server" {
++		suffix = " (dry run)"
++	}
++	fmt.Printf("%s/%s patched%s\n", rlabel, name, suffix)
++}
++
++func cmdLabel(args []string) {
++	spec := newFlagSpec()
++	spec.value("namespace", "selector")
++	spec.bool_("overwrite", "all")
++	spec.alias("n", "namespace")
++	spec.alias("l", "selector")
++	pos, flags, _ := spec.parse(args)
++	if len(pos) < 1 {
++		usageErr("resource type required")
++	}
++	kind := resolveKind(pos[0])
++	if _, ok := getAPI(kind); !ok {
++		die(fmt.Sprintf("unknown resource type %q", pos[0]))
++	}
++	names := []string{}
++	labels := map[string]*string{}
++	for _, a := range pos[1:] {
++		if strings.Contains(a, "=") {
++			idx := strings.Index(a, "=")
++			k := a[:idx]
++			v := a[idx+1:]
++			labels[k] = &v
++		} else if strings.HasSuffix(a, "-") {
++			k := a[:len(a)-1]
++			labels[k] = nil
++		} else {
++			names = append(names, a)
++		}
++	}
++	if len(labels) == 0 {
++		die("at least one label spec required")
++	}
++	if len(names) == 0 && flags["selector"] == "" {
++		die("resource name or --selector required")
++	}
++	c := newClient()
++	targets := names
++	if len(targets) == 0 {
++		list := c.list(kind, flags["namespace"], false, flags["selector"])
++		items, _ := list["items"].([]any)
++		for _, it := range items {
++			m, _ := it.(map[string]any)
++			targets = append(targets, manifestName(m))
++		}
++	}
++	rlabel := resourceRepr(kind)
++	for _, nm := range targets {
++		if flags["overwrite"] != "true" {
++			obj := c.get(kind, flags["namespace"], nm)
++			meta, _ := obj["metadata"].(map[string]any)
++			existing := map[string]any{}
++			if meta != nil {
++				if lm, ok := meta["labels"].(map[string]any); ok {
++					existing = lm
++				}
++			}
++			for k, v := range labels {
++				if v == nil {
++					continue
++				}
++				if ev, ok := existing[k]; ok {
++					if es, _ := ev.(string); es != *v {
++						die(fmt.Sprintf("'%s' already has a value (%s), and --overwrite is false", k, es))
++					}
++				}
++			}
++		}
++		patchLabels := map[string]any{}
++		for k, v := range labels {
++			if v == nil {
++				patchLabels[k] = nil
++			} else {
++				patchLabels[k] = *v
++			}
++		}
++		patch := map[string]any{"metadata": map[string]any{"labels": patchLabels}}
++		data, _ := json.Marshal(patch)
++		status, _ := c.patch(kind, flags["namespace"], nm, "application/merge-patch+json", data, "")
++		if status >= 400 {
++			errAPI(status, "label failed")
++		}
++		fmt.Printf("%s/%s labeled\n", rlabel, nm)
++	}
++}
++
++func cmdScale(args []string) {
++	spec := newFlagSpec()
++	spec.value("namespace", "replicas", "current-replicas", "resource-version")
++	spec.alias("n", "namespace")
++	pos, flags, _ := spec.parse(args)
++	if len(pos) < 2 {
++		usageErr("TYPE and NAME are required")
++	}
++	rtype := pos[0]
++	kind := resolveKind(rtype)
++	switch kind {
++	case "Deployment", "StatefulSet", "ReplicaSet":
++	default:
++		die(fmt.Sprintf("cannot scale resource type %q: Invalid", rtype))
++	}
++	rs := flags["replicas"]
++	if rs == "" {
++		usageErr("--replicas is required")
++	}
++	n, err := strconv.Atoi(rs)
++	if err != nil {
++		usageErr("invalid --replicas value")
++	}
++	patch := map[string]any{"spec": map[string]any{"replicas": n}}
++	data, _ := json.Marshal(patch)
++	c := newClient()
++	status, _ := c.patch(kind, flags["namespace"], pos[1], "application/merge-patch+json", data, "")
++	if status >= 400 {
++		errAPI(status, "scale failed")
++	}
++	fmt.Printf("%s/%s scaled\n", resourceRepr(kind), pos[1])
++}
++
++func main() {
++	if len(os.Args) < 2 {
++		die("you must specify a command")
++	}
++	verb := os.Args[1]
++	args := os.Args[2:]
++	switch verb {
++	case "apply":
++		cmdApply(args)
++	case "create":
++		cmdCreate(args)
++	case "delete":
++		cmdDelete(args)
++	case "get":
++		cmdGet(args)
++	case "describe":
++		cmdDescribe(args)
++	case "patch":
++		cmdPatch(args)
++	case "label":
++		cmdLabel(args)
++	case "scale":
++		cmdScale(args)
++	default:
++		die(fmt.Sprintf("unknown command %q", verb))
++	}
++}
+diff --git a/submission/go.mod b/submission/go.mod
+new file mode 100644
+--- /dev/null
++++ b/submission/go.mod
+@@ -0,0 +1,3 @@
++module submission
++
++go 1.21

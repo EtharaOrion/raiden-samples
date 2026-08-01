@@ -1,0 +1,285 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,279 @@
++import sys
++import os
++import json
++import base64
++import urllib.request
++import urllib.error
++
++
++def get_endpoint():
++    ep = os.environ.get("AWS_ENDPOINT_URL_DYNAMODB") or os.environ.get("AWS_ENDPOINT_URL")
++    if not ep:
++        ep = os.environ["AWS_ENDPOINT_URL"]
++    return ep
++
++
++def call(op, payload):
++    endpoint = get_endpoint()
++    data = json.dumps(payload).encode("utf-8")
++    req = urllib.request.Request(endpoint, data=data, method="POST")
++    req.add_header("Content-Type", "application/x-amz-json-1.0")
++    req.add_header("X-Amz-Target", "DynamoDB_20120810." + op)
++    req.add_header("Authorization",
++                   "AWS4-HMAC-SHA256 Credential=dummy/20120810/us-east-1/dynamodb/aws4_request, "
++                   "SignedHeaders=host;x-amz-date;x-amz-target, Signature=dummy")
++    req.add_header("X-Amz-Date", "20120810T000000Z")
++    try:
++        resp = urllib.request.urlopen(req)
++        body = resp.read().decode("utf-8")
++        if body:
++            return json.loads(body)
++        return {}
++    except urllib.error.HTTPError as e:
++        body = e.read().decode("utf-8")
++        try:
++            err = json.loads(body)
++        except Exception:
++            err = {}
++        typ = err.get("__type", "UnknownError")
++        code = typ.split("#")[-1]
++        msg = err.get("message") or err.get("Message") or ""
++        sys.stderr.write("\n" + code + ": " + msg + "\n")
++        sys.exit(254)
++    except urllib.error.URLError as e:
++        sys.stderr.write("\nConnectionError: " + str(e) + "\n")
++        sys.exit(254)
++
++
++def usage_error(msg):
++    sys.stderr.write("usage error: " + msg + "\n")
++    sys.exit(252)
++
++
++FLAGS = {
++    "describe-table": ["--table-name"],
++    "put-item": [
++        "--condition-expression", "--conditional-operator", "--expected",
++        "--expression-attribute-names", "--expression-attribute-values", "--item",
++        "--return-consumed-capacity", "--return-item-collection-metrics", "--return-values",
++        "--return-values-on-condition-check-failure", "--table-name",
++    ],
++    "scan": [
++        "--attributes-to-get", "--conditional-operator", "--consistent-read",
++        "--exclusive-start-key", "--expression-attribute-names", "--expression-attribute-values",
++        "--filter-expression", "--index-name", "--limit", "--projection-expression",
++        "--return-consumed-capacity", "--scan-filter", "--segment", "--select",
++        "--table-name", "--total-segments",
++    ],
++    "create-table": [
++        "--attribute-definitions", "--billing-mode", "--deletion-protection-enabled",
++        "--global-secondary-indexes", "--global-table-settings-replication-mode",
++        "--global-table-source-arn", "--key-schema", "--local-secondary-indexes",
++        "--on-demand-throughput", "--provisioned-throughput", "--resource-policy",
++        "--sse-specification", "--stream-specification", "--table-class",
++        "--table-name", "--tags", "--warm-throughput",
++    ],
++}
++
++# flags that are boolean (store_true, no value)
++BOOL_FLAGS = set(["--consistent-read", "--deletion-protection-enabled"])
++
++# flags whose value is JSON
++JSON_FLAGS = set([
++    "--expected", "--expression-attribute-names", "--expression-attribute-values",
++    "--item", "--exclusive-start-key", "--scan-filter", "--attributes-to-get",
++    "--attribute-definitions", "--global-secondary-indexes", "--key-schema",
++    "--local-secondary-indexes", "--on-demand-throughput", "--provisioned-throughput",
++    "--resource-policy", "--sse-specification", "--stream-specification", "--tags",
++    "--warm-throughput",
++])
++
++# flags that take multiple shorthand list values
++LIST_SHORTHAND = set(["--attribute-definitions", "--key-schema"])
++
++# integer flags
++INT_FLAGS = set(["--limit", "--segment", "--total-segments"])
++
++
++def kebab_to_pascal(flag):
++    name = flag[2:]
++    return "".join(p.capitalize() for p in name.split("-"))
++
++
++def parse_shorthand_list(values):
++    result = []
++    for v in values:
++        d = {}
++        for part in v.split(","):
++            if "=" not in part:
++                usage_error("invalid shorthand syntax: " + v)
++            k, val = part.split("=", 1)
++            d[k] = val
++        result.append(d)
++    return result
++
++
++def parse_shorthand_struct(value):
++    d = {}
++    for part in value.split(","):
++        if "=" not in part:
++            usage_error("invalid shorthand syntax: " + value)
++        k, val = part.split("=", 1)
++        d[k] = val
++    return d
++
++
++def convert_provisioned(d):
++    out = {}
++    for k, v in d.items():
++        try:
++            out[k] = int(v)
++        except ValueError:
++            out[k] = v
++    return out
++
++
++def parse_args(subcmd, argv):
++    allowed = FLAGS[subcmd]
++    params = {}
++    seen = set()
++    i = 0
++    while i < len(argv):
++        tok = argv[i]
++        if not tok.startswith("--"):
++            usage_error("unexpected argument: " + tok)
++        # handle --flag=value
++        if "=" in tok and tok.split("=", 1)[0] in allowed:
++            flag, inlineval = tok.split("=", 1)
++            rest = [inlineval]
++            i += 1
++        else:
++            flag = tok
++            if flag not in allowed:
++                usage_error("unknown flag: " + flag)
++            i += 1
++            if flag in BOOL_FLAGS:
++                rest = None
++            else:
++                rest = []
++                while i < len(argv) and not argv[i].startswith("--"):
++                    rest.append(argv[i])
++                    i += 1
++        if flag not in allowed:
++            usage_error("unknown flag: " + flag)
++        if flag in seen:
++            usage_error("duplicate flag: " + flag)
++        seen.add(flag)
++
++        field = kebab_to_pascal(flag)
++
++        if flag in BOOL_FLAGS:
++            params[field] = True
++            continue
++
++        if rest is None or len(rest) == 0:
++            usage_error("missing value for " + flag)
++
++        if flag in LIST_SHORTHAND:
++            # could be JSON or shorthand
++            joined = rest[0]
++            if joined.strip().startswith("[") or joined.strip().startswith("{"):
++                try:
++                    params[field] = json.loads(joined)
++                except ValueError:
++                    usage_error("invalid JSON for " + flag)
++            else:
++                params[field] = parse_shorthand_list(rest)
++            continue
++
++        val = rest[0]
++        if flag in INT_FLAGS:
++            try:
++                params[field] = int(val)
++            except ValueError:
++                usage_error("invalid integer for " + flag)
++            continue
++
++        if flag == "--provisioned-throughput" or flag == "--on-demand-throughput" or flag == "--warm-throughput":
++            if val.strip().startswith("{"):
++                try:
++                    params[field] = json.loads(val)
++                except ValueError:
++                    usage_error("invalid JSON for " + flag)
++            else:
++                params[field] = convert_provisioned(parse_shorthand_struct(val))
++            continue
++
++        if flag in JSON_FLAGS:
++            if flag == "--attributes-to-get":
++                # list of strings
++                if val.strip().startswith("["):
++                    try:
++                        params[field] = json.loads(val)
++                    except ValueError:
++                        usage_error("invalid JSON for " + flag)
++                else:
++                    params[field] = rest
++                continue
++            try:
++                params[field] = json.loads(val)
++            except ValueError:
++                usage_error("invalid JSON for " + flag)
++            continue
++
++        # plain string
++        params[field] = val
++
++    return params
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3:
++        usage_error("too few arguments")
++
++    prefix = argv[1]
++    subcmd = argv[2]
++
++    if prefix != "dynamodb":
++        usage_error("unknown service: " + prefix)
++
++    if subcmd not in FLAGS:
++        usage_error("unknown command: " + subcmd)
++
++    params = parse_args(subcmd, argv[3:])
++
++    if subcmd == "describe-table":
++        if "TableName" not in params:
++            usage_error("--table-name is required")
++        result = call("DescribeTable", params)
++        print(json.dumps(result, indent=4))
++        sys.exit(0)
++
++    elif subcmd == "put-item":
++        if "TableName" not in params:
++            usage_error("--table-name is required")
++        if "Item" not in params:
++            usage_error("--item is required")
++        result = call("PutItem", params)
++        if result:
++            print(json.dumps(result, indent=4))
++        sys.exit(0)
++
++    elif subcmd == "scan":
++        if "TableName" not in params:
++            usage_error("--table-name is required")
++        result = call("Scan", params)
++        print(json.dumps(result, indent=4))
++        sys.exit(0)
++
++    elif subcmd == "create-table":
++        if "TableName" not in params:
++            usage_error("--table-name is required")
++        result = call("CreateTable", params)
++        print(json.dumps(result, indent=4))
++        sys.exit(0)
++
++
++if __name__ == "__main__":
++    main()

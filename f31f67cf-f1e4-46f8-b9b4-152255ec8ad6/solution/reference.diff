@@ -1,0 +1,287 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,281 @@
++import sys, json, os, urllib.request, urllib.error
++
++EXIT_USAGE = 252
++EXIT_SERVICE = 254
++
++import datetime as _qc_dt
++
++_QC_TS_FIELDS = ['CompletionDate', 'CreatedAt', 'CreationDate', 'DeviceCreateDate', 'DeviceLastAuthenticatedDate', 'DeviceLastModifiedDate', 'FeedbackDate', 'LastModifiedDate', 'StartDate', 'UserCreateDate', 'UserLastModifiedDate']
++
++
++def _isofix(o):
++    """Serialise AWS timestamp fields as ISO8601 strings, matching aws-cli v2."""
++    if isinstance(o, dict):
++        r = {}
++        for k, v in o.items():
++            if (k in _QC_TS_FIELDS and isinstance(v, (int, float))
++                    and not isinstance(v, bool)):
++                r[k] = _qc_dt.datetime.fromtimestamp(
++                    v, _qc_dt.timezone.utc).isoformat()
++            else:
++                r[k] = _isofix(v)
++        return r
++    if isinstance(o, list):
++        return [_isofix(x) for x in o]
++    return o
++
++def err_usage(msg):
++    sys.stderr.write(str(msg) + "\n")
++    sys.exit(EXIT_USAGE)
++
++FLAGS = {
++    '--pool-name': ('PoolName', 'str'),
++    '--user-pool-id': ('UserPoolId', 'str'),
++    '--client-name': ('ClientName', 'str'),
++    '--client-id': ('ClientId', 'str'),
++    '--username': ('Username', 'str'),
++    '--user-attributes': ('UserAttributes', 'attrs'),
++    '--max-results': ('MaxResults', 'int'),
++    '--group-name': ('GroupName', 'str'),
++    '--temporary-password': ('TemporaryPassword', 'str'),
++    '--description': ('Description', 'str'),
++    '--precedence': ('Precedence', 'int'),
++    '--limit': ('Limit', 'int'),
++    '--user-attribute-names': ('UserAttributeNames', 'list'),
++    '--custom-attributes': ('CustomAttributes', 'cattrs'),
++    '--password': ('Password', 'str'),
++    '--mfa-configuration': ('MfaConfiguration', 'str'),
++    '--sms-mfa-configuration': ('SmsMfaConfiguration', 'json'),
++    '--software-token-mfa-configuration': ('SoftwareTokenMfaConfiguration', 'json'),
++    '--role-arn': ('RoleArn', 'str'),
++    '--next-token': ('NextToken', 'str'),
++    '--pagination-token': ('PaginationToken', 'str'),
++    '--filter': ('Filter', 'str'),
++    '--message-action': ('MessageAction', 'str'),
++    '--deletion-protection': ('DeletionProtection', 'str'),
++    '--user-pool-tier': ('UserPoolTier', 'str'),
++    '--prevent-user-existence-errors': ('PreventUserExistenceErrors', 'str'),
++}
++BOOL_FLAGS = {
++    '--permanent': ('Permanent', True),
++    '--no-permanent': ('Permanent', False),
++}
++
++# Params that require a minimum length of 1 (empty string -> Invalid length)
++MIN_LEN_PARAMS = {
++    'UserPoolId', 'ClientId', 'ClientName', 'PoolName',
++    'GroupName', 'Username', 'Password',
++}
++
++
++def parse_attrs_shorthand(val, flagname):
++    val = val.strip()
++    if val.startswith('[') or val.startswith('{'):
++        try:
++            return json.loads(val)
++        except json.JSONDecodeError:
++            err_usage("Error parsing parameter '%s': Invalid JSON received." % flagname)
++    items = []
++    for piece in val.split():
++        d = {}
++        for kv in piece.split(','):
++            if '=' in kv:
++                k, v = kv.split('=', 1)
++                d[k] = v
++        items.append(d)
++    return items
++
++
++def parse_args(args, spec_reqs):
++    params = {}
++    seen = set()
++    unknown = []
++    i = 0
++    while i < len(args):
++        a = args[i]
++        if a in BOOL_FLAGS:
++            key, v = BOOL_FLAGS[a]
++            if key in seen:
++                err_usage("Error: Duplicate options: argument %s" % a)
++            seen.add(key)
++            params[key] = v
++            i += 1
++            continue
++        if a not in FLAGS:
++            # collect unknown option; also consume its value if present
++            unknown.append(a)
++            if i + 1 < len(args) and not args[i + 1].startswith('--'):
++                i += 2
++            else:
++                i += 1
++            continue
++        key, typ = FLAGS[a]
++        if key in seen:
++            err_usage("Error: Duplicate options: argument %s" % a)
++        seen.add(key)
++        if i + 1 >= len(args):
++            err_usage("argument %s: expected one argument" % a)
++        val = args[i + 1]
++        if typ == 'int':
++            try:
++                params[key] = int(val)
++            except ValueError:
++                err_usage("argument %s: invalid int value: '%s'" % (a, val))
++        elif typ in ('attrs', 'cattrs'):
++            params[key] = parse_attrs_shorthand(val, key)
++        elif typ == 'list':
++            v = val.strip()
++            if v.startswith('['):
++                try:
++                    params[key] = json.loads(v)
++                except json.JSONDecodeError:
++                    err_usage("Error parsing parameter '%s': Invalid JSON received." % key)
++            else:
++                params[key] = v.split(',')
++        elif typ == 'json':
++            try:
++                params[key] = json.loads(val)
++            except json.JSONDecodeError:
++                err_usage("Error parsing parameter '%s': Invalid JSON received." % key)
++        else:
++            params[key] = val
++        i += 2
++
++    if unknown:
++        err_usage("Unknown options: %s" % ", ".join(unknown))
++
++    return params
++
++
++def flag_for_param(param):
++    for f, (k, t) in FLAGS.items():
++        if k == param:
++            return f
++    return '--' + param.lower()
++
++
++def require(params, keys):
++    missing = [k for k in keys if k not in params]
++    if missing:
++        flags = ", ".join(flag_for_param(k) for k in missing)
++        err_usage(
++            "the following arguments are required: %s" % flags
++        )
++
++
++def validate_lengths(params):
++    for k, v in params.items():
++        if k in MIN_LEN_PARAMS and isinstance(v, str) and len(v) == 0:
++            sys.stderr.write(
++                "Parameter validation failed:\n"
++                "Invalid length for parameter %s, value: 0, valid min length: 1\n" % k
++            )
++            sys.exit(EXIT_USAGE)
++
++
++def endpoint():
++    return os.environ.get('AWS_ENDPOINT_URL_COGNITO_IDENTITY_PROVIDER') or \
++        os.environ.get('AWS_ENDPOINT_URL') or 'http://localhost:5000'
++
++
++def call(op, body):
++    url = endpoint()
++    data = json.dumps(body).encode()
++    req = urllib.request.Request(url, data=data, method='POST')
++    req.add_header('Content-Type', 'application/x-amz-json-1.1')
++    req.add_header('X-Amz-Target', 'AWSCognitoIdentityProviderService.' + op)
++    req.add_header('Authorization',
++                   'AWS4-HMAC-SHA256 Credential=dummy/20260101/us-east-1/cognito-idp/aws4_request, '
++                   'SignedHeaders=host;x-amz-date, Signature=dummy')
++    req.add_header('X-Amz-Date', '20260101T000000Z')
++    try:
++        resp = urllib.request.urlopen(req)
++        raw = resp.read().decode()
++        return json.loads(raw) if raw.strip() else {}
++    except urllib.error.HTTPError as e:
++        raw = e.read().decode()
++        sys.stderr.write(raw + "\n")
++        sys.exit(EXIT_SERVICE)
++    except urllib.error.URLError as e:
++        sys.stderr.write(str(e) + "\n")
++        sys.exit(255)
++
++
++def out(obj):
++    if obj is None:
++        obj = {}
++    print(json.dumps(_isofix(obj), indent=4, default=str))
++
++
++# subcommand -> (Op, required params, empty_body)
++SPEC = {
++    'create-user-pool': ('CreateUserPool', ['PoolName'], False),
++    'describe-user-pool': ('DescribeUserPool', ['UserPoolId'], False),
++    'update-user-pool': ('UpdateUserPool', ['UserPoolId'], True),
++    'list-user-pools': ('ListUserPools', [], False),
++    'delete-user-pool': ('DeleteUserPool', ['UserPoolId'], True),
++    'create-user-pool-client': ('CreateUserPoolClient', ['UserPoolId', 'ClientName'], False),
++    'describe-user-pool-client': ('DescribeUserPoolClient', ['UserPoolId', 'ClientId'], False),
++    'update-user-pool-client': ('UpdateUserPoolClient', ['UserPoolId', 'ClientId'], False),
++    'list-user-pool-clients': ('ListUserPoolClients', ['UserPoolId'], False),
++    'delete-user-pool-client': ('DeleteUserPoolClient', ['UserPoolId', 'ClientId'], True),
++    'admin-create-user': ('AdminCreateUser', ['UserPoolId', 'Username'], False),
++    'admin-get-user': ('AdminGetUser', ['UserPoolId', 'Username'], False),
++    'admin-update-user-attributes': ('AdminUpdateUserAttributes', ['UserPoolId', 'Username', 'UserAttributes'], True),
++    'admin-delete-user-attributes': ('AdminDeleteUserAttributes', ['UserPoolId', 'Username', 'UserAttributeNames'], True),
++    'admin-set-user-password': ('AdminSetUserPassword', ['UserPoolId', 'Username', 'Password'], True),
++    'admin-disable-user': ('AdminDisableUser', ['UserPoolId', 'Username'], True),
++    'admin-enable-user': ('AdminEnableUser', ['UserPoolId', 'Username'], True),
++    'admin-confirm-sign-up': ('AdminConfirmSignUp', ['UserPoolId', 'Username'], True),
++    'admin-delete-user': ('AdminDeleteUser', ['UserPoolId', 'Username'], True),
++    'list-users': ('ListUsers', ['UserPoolId'], False),
++    'create-group': ('CreateGroup', ['GroupName', 'UserPoolId'], False),
++    'get-group': ('GetGroup', ['GroupName', 'UserPoolId'], False),
++    'update-group': ('UpdateGroup', ['GroupName', 'UserPoolId'], False),
++    'list-groups': ('ListGroups', ['UserPoolId'], False),
++    'delete-group': ('DeleteGroup', ['GroupName', 'UserPoolId'], True),
++    'admin-add-user-to-group': ('AdminAddUserToGroup', ['UserPoolId', 'Username', 'GroupName'], True),
++    'admin-remove-user-from-group': ('AdminRemoveUserFromGroup', ['UserPoolId', 'Username', 'GroupName'], True),
++    'admin-list-groups-for-user': ('AdminListGroupsForUser', ['Username', 'UserPoolId'], False),
++    'list-users-in-group': ('ListUsersInGroup', ['UserPoolId', 'GroupName'], False),
++    'add-custom-attributes': ('AddCustomAttributes', ['UserPoolId', 'CustomAttributes'], True),
++    'get-user-pool-mfa-config': ('GetUserPoolMfaConfig', ['UserPoolId'], False),
++    'set-user-pool-mfa-config': ('SetUserPoolMfaConfig', ['UserPoolId'], False),
++}
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3:
++        err_usage("usage: main.py cognito-idp <command> [args]")
++    if argv[1] != 'cognito-idp':
++        err_usage("unknown service: %s" % argv[1])
++    sub = argv[2]
++    if sub not in SPEC:
++        err_usage("Invalid choice: unknown command: %s" % sub)
++    op, reqs, empty = SPEC[sub]
++
++    params = parse_args(argv[3:], reqs)
++
++    if sub == 'list-user-pools' and 'MaxResults' not in params:
++        # MaxResults is required for this command per CLI model
++        pass
++
++    # Required-param check (includes MaxResults for list-user-pools)
++    effective_reqs = list(reqs)
++    if sub == 'list-user-pools':
++        effective_reqs = ['MaxResults']
++    require(params, effective_reqs)
++
++    # Client-side length validation
++    validate_lengths(params)
++
++    resp = call(op, params)
++
++    if empty:
++        return
++    out(resp)
++
++
++if __name__ == '__main__':
++    main()

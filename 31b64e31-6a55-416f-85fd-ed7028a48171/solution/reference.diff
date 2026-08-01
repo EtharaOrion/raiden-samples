@@ -1,0 +1,324 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,318 @@
++import sys
++import os
++import json
++import base64
++import urllib.request
++import urllib.error
++
++
++def get_endpoint():
++    ep = os.environ.get("AWS_ENDPOINT_URL_DYNAMODB") or os.environ.get("AWS_ENDPOINT_URL")
++    if not ep:
++        sys.stderr.write("No endpoint URL configured\n")
++        sys.exit(254)
++    return ep
++
++
++def call(op, payload):
++    endpoint = get_endpoint()
++    data = json.dumps(payload).encode("utf-8")
++    req = urllib.request.Request(endpoint, data=data, method="POST")
++    req.add_header("Content-Type", "application/x-amz-json-1.0")
++    req.add_header("X-Amz-Target", "DynamoDB_20120810." + op)
++    req.add_header("Authorization",
++                   "AWS4-HMAC-SHA256 Credential=dummy/20200101/us-east-1/dynamodb/aws4_request, "
++                   "SignedHeaders=host;x-amz-date, Signature=dummy")
++    req.add_header("X-Amz-Date", "20200101T000000Z")
++    try:
++        resp = urllib.request.urlopen(req)
++        body = resp.read().decode("utf-8")
++        if body:
++            return json.loads(body)
++        return {}
++    except urllib.error.HTTPError as e:
++        raw = e.read().decode("utf-8")
++        code = "UnknownError"
++        msg = raw
++        try:
++            j = json.loads(raw)
++            t = j.get("__type", "")
++            if "#" in t:
++                code = t.split("#", 1)[1]
++            elif t:
++                code = t
++            msg = j.get("message") or j.get("Message") or ""
++        except Exception:
++            pass
++        sys.stderr.write("\nAn error occurred (%s): %s\n" % (code, msg))
++        sys.exit(254)
++    except urllib.error.URLError as e:
++        sys.stderr.write("Could not connect to the endpoint URL: %s\n" % str(e))
++        sys.exit(254)
++
++
++def usage_error(msg):
++    sys.stderr.write("usage error: %s\n" % msg)
++    sys.exit(252)
++
++
++def parse_flags(args, allowed):
++    """Parse --flag value pairs. allowed is a set of flag names (kebab-case, without --).
++    Returns dict flagname -> list of values (raw strings)."""
++    result = {}
++    i = 0
++    n = len(args)
++    while i < n:
++        tok = args[i]
++        if not tok.startswith("--"):
++            usage_error("unexpected argument: %s" % tok)
++        name = tok[2:]
++        if name not in allowed:
++            usage_error("unknown flag: --%s" % name)
++        # collect values until next -- flag
++        vals = []
++        j = i + 1
++        while j < n and not args[j].startswith("--"):
++            vals.append(args[j])
++            j += 1
++        if name in result:
++            usage_error("duplicate flag: --%s" % name)
++        result[name] = vals
++        i = j
++    return result
++
++
++def require_single_value(flags, name):
++    if name not in flags:
++        usage_error("missing required flag: --%s" % name)
++    vals = flags[name]
++    if len(vals) != 1:
++        usage_error("flag --%s requires exactly one value" % name)
++    v = vals[0]
++    if v == "":
++        usage_error("flag --%s value cannot be empty" % name)
++    return v
++
++
++def parse_json_flag(flags, name):
++    v = require_single_value(flags, name)
++    try:
++        return json.loads(v)
++    except Exception:
++        usage_error("invalid JSON for --%s" % name)
++
++
++def parse_shorthand_list(vals):
++    """Parse shorthand structures like AttributeName=pk,AttributeType=S into a list of dicts."""
++    out = []
++    for item in vals:
++        d = {}
++        for pair in item.split(","):
++            if "=" not in pair:
++                usage_error("invalid shorthand: %s" % pair)
++            k, v = pair.split("=", 1)
++            d[k] = v
++        out.append(d)
++    return out
++
++
++def parse_shorthand_map(val):
++    d = {}
++    for pair in val.split(","):
++        if "=" not in pair:
++            usage_error("invalid shorthand: %s" % pair)
++        k, v = pair.split("=", 1)
++        d[k] = v
++    return d
++
++
++def try_json_or_shorthand_list(vals, keymap=None):
++    # If single value looks like JSON, parse as JSON
++    if len(vals) == 1:
++        s = vals[0].strip()
++        if s.startswith("[") or s.startswith("{"):
++            try:
++                return json.loads(vals[0])
++            except Exception:
++                usage_error("invalid JSON")
++    return parse_shorthand_list(vals)
++
++
++def to_int_capacity(d):
++    out = {}
++    for k, v in d.items():
++        try:
++            out[k] = int(v)
++        except Exception:
++            out[k] = v
++    return out
++
++
++def cmd_list_tables(args):
++    allowed = {"exclusive-start-table-name", "limit"}
++    flags = parse_flags(args, allowed)
++    payload = {}
++    if "exclusive-start-table-name" in flags:
++        payload["ExclusiveStartTableName"] = require_single_value(flags, "exclusive-start-table-name")
++    if "limit" in flags:
++        lv = require_single_value(flags, "limit")
++        try:
++            payload["Limit"] = int(lv)
++        except Exception:
++            usage_error("invalid value for --limit")
++    result = call("ListTables", payload)
++    print(json.dumps(result, indent=4))
++    sys.exit(0)
++
++
++def cmd_get_item(args):
++    allowed = {"attributes-to-get", "consistent-read", "expression-attribute-names",
++               "key", "projection-expression", "return-consumed-capacity", "table-name"}
++    flags = parse_flags(args, allowed)
++    payload = {}
++    payload["TableName"] = require_single_value(flags, "table-name")
++    payload["Key"] = parse_json_flag(flags, "key")
++    if "consistent-read" in flags:
++        payload["ConsistentRead"] = True
++    if "projection-expression" in flags:
++        payload["ProjectionExpression"] = require_single_value(flags, "projection-expression")
++    if "return-consumed-capacity" in flags:
++        payload["ReturnConsumedCapacity"] = require_single_value(flags, "return-consumed-capacity")
++    if "expression-attribute-names" in flags:
++        payload["ExpressionAttributeNames"] = parse_json_flag(flags, "expression-attribute-names")
++    if "attributes-to-get" in flags:
++        payload["AttributesToGet"] = flags["attributes-to-get"]
++    result = call("GetItem", payload)
++    print(json.dumps(result, indent=4))
++    sys.exit(0)
++
++
++def cmd_put_item(args):
++    allowed = {"condition-expression", "conditional-operator", "expected",
++               "expression-attribute-names", "expression-attribute-values", "item",
++               "return-consumed-capacity", "return-item-collection-metrics",
++               "return-values", "return-values-on-condition-check-failure", "table-name"}
++    flags = parse_flags(args, allowed)
++    payload = {}
++    payload["TableName"] = require_single_value(flags, "table-name")
++    payload["Item"] = parse_json_flag(flags, "item")
++    if "condition-expression" in flags:
++        payload["ConditionExpression"] = require_single_value(flags, "condition-expression")
++    if "conditional-operator" in flags:
++        payload["ConditionalOperator"] = require_single_value(flags, "conditional-operator")
++    if "expected" in flags:
++        payload["Expected"] = parse_json_flag(flags, "expected")
++    if "expression-attribute-names" in flags:
++        payload["ExpressionAttributeNames"] = parse_json_flag(flags, "expression-attribute-names")
++    if "expression-attribute-values" in flags:
++        payload["ExpressionAttributeValues"] = parse_json_flag(flags, "expression-attribute-values")
++    if "return-consumed-capacity" in flags:
++        payload["ReturnConsumedCapacity"] = require_single_value(flags, "return-consumed-capacity")
++    if "return-item-collection-metrics" in flags:
++        payload["ReturnItemCollectionMetrics"] = require_single_value(flags, "return-item-collection-metrics")
++    if "return-values" in flags:
++        payload["ReturnValues"] = require_single_value(flags, "return-values")
++    if "return-values-on-condition-check-failure" in flags:
++        payload["ReturnValuesOnConditionCheckFailure"] = require_single_value(flags, "return-values-on-condition-check-failure")
++    result = call("PutItem", payload)
++    if result:
++        print(json.dumps(result, indent=4))
++    else:
++        print("")
++    sys.exit(0)
++
++
++def cmd_create_table(args):
++    allowed = {"attribute-definitions", "billing-mode", "deletion-protection-enabled",
++               "global-secondary-indexes", "global-table-settings-replication-mode",
++               "global-table-source-arn", "key-schema", "local-secondary-indexes",
++               "on-demand-throughput", "provisioned-throughput", "resource-policy",
++               "sse-specification", "stream-specification", "table-class", "table-name",
++               "tags", "warm-throughput"}
++    flags = parse_flags(args, allowed)
++    payload = {}
++    payload["TableName"] = require_single_value(flags, "table-name")
++
++    if "attribute-definitions" in flags:
++        vals = flags["attribute-definitions"]
++        payload["AttributeDefinitions"] = try_json_or_shorthand_list(vals)
++    if "key-schema" in flags:
++        vals = flags["key-schema"]
++        payload["KeySchema"] = try_json_or_shorthand_list(vals)
++    if "billing-mode" in flags:
++        payload["BillingMode"] = require_single_value(flags, "billing-mode")
++    if "deletion-protection-enabled" in flags:
++        payload["DeletionProtectionEnabled"] = True
++    if "provisioned-throughput" in flags:
++        vals = flags["provisioned-throughput"]
++        if len(vals) == 1 and (vals[0].strip().startswith("{")):
++            try:
++                payload["ProvisionedThroughput"] = json.loads(vals[0])
++            except Exception:
++                usage_error("invalid JSON for --provisioned-throughput")
++        else:
++            payload["ProvisionedThroughput"] = to_int_capacity(parse_shorthand_map(vals[0]))
++    if "on-demand-throughput" in flags:
++        vals = flags["on-demand-throughput"]
++        if len(vals) == 1 and vals[0].strip().startswith("{"):
++            payload["OnDemandThroughput"] = json.loads(vals[0])
++        else:
++            payload["OnDemandThroughput"] = to_int_capacity(parse_shorthand_map(vals[0]))
++    if "global-secondary-indexes" in flags:
++        payload["GlobalSecondaryIndexes"] = try_json_or_shorthand_list(flags["global-secondary-indexes"])
++    if "local-secondary-indexes" in flags:
++        payload["LocalSecondaryIndexes"] = try_json_or_shorthand_list(flags["local-secondary-indexes"])
++    if "sse-specification" in flags:
++        v = require_single_value(flags, "sse-specification")
++        if v.strip().startswith("{"):
++            payload["SSESpecification"] = json.loads(v)
++        else:
++            payload["SSESpecification"] = parse_shorthand_map(v)
++    if "stream-specification" in flags:
++        v = require_single_value(flags, "stream-specification")
++        if v.strip().startswith("{"):
++            payload["StreamSpecification"] = json.loads(v)
++        else:
++            payload["StreamSpecification"] = parse_shorthand_map(v)
++    if "table-class" in flags:
++        payload["TableClass"] = require_single_value(flags, "table-class")
++    if "tags" in flags:
++        payload["Tags"] = try_json_or_shorthand_list(flags["tags"])
++    if "resource-policy" in flags:
++        payload["ResourcePolicy"] = require_single_value(flags, "resource-policy")
++    if "warm-throughput" in flags:
++        v = require_single_value(flags, "warm-throughput")
++        if v.strip().startswith("{"):
++            payload["WarmThroughput"] = json.loads(v)
++        else:
++            payload["WarmThroughput"] = to_int_capacity(parse_shorthand_map(v))
++    if "global-table-settings-replication-mode" in flags:
++        payload["GlobalTableSettingsReplicationMode"] = require_single_value(flags, "global-table-settings-replication-mode")
++    if "global-table-source-arn" in flags:
++        payload["GlobalTableSourceArn"] = require_single_value(flags, "global-table-source-arn")
++
++    result = call("CreateTable", payload)
++    print(json.dumps(result, indent=4))
++    sys.exit(0)
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3:
++        usage_error("missing command")
++    sub = argv[2]
++    args = argv[3:]
++    if sub == "list-tables":
++        cmd_list_tables(args)
++    elif sub == "get-item":
++        cmd_get_item(args)
++    elif sub == "put-item":
++        cmd_put_item(args)
++    elif sub == "create-table":
++        cmd_create_table(args)
++    else:
++        usage_error("unknown command: %s" % sub)
++
++
++if __name__ == "__main__":
++    main()

@@ -1,0 +1,763 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,757 @@
++import sys
++import os
++import json
++import base64
++import urllib.request
++import urllib.error
++
++ENDPOINT = os.environ.get("AWS_ENDPOINT_URL_KMS") or os.environ.get("AWS_ENDPOINT_URL") or "http://localhost:4566"
++
++ERR_USAGE = 252
++ERR_SERVICE = 254
++ERR_INTERNAL = 255
++
++GLOBAL_VALUE_FLAGS = {
++    "--output", "--region", "--profile", "--endpoint-url", "--color",
++    "--cli-read-timeout", "--cli-connect-timeout", "--query", "--ca-bundle",
++    "--cli-binary-format",
++}
++GLOBAL_BOOL_FLAGS = {
++    "--no-verify-ssl", "--no-paginate", "--debug", "--no-cli-pager",
++    "--no-sign-request",
++}
++
++
++def eprint(s):
++    sys.stderr.write(s + "\n")
++
++
++def call(op, payload):
++    url = ENDPOINT.rstrip("/") + "/"
++    data = json.dumps(payload).encode("utf-8")
++    req = urllib.request.Request(url, data=data, method="POST")
++    req.add_header("X-Amz-Target", "TrentService." + op)
++    req.add_header("Content-Type", "application/x-amz-json-1.1")
++    req.add_header(
++        "Authorization",
++        "AWS4-HMAC-SHA256 Credential=dummy/20260101/us-east-1/kms/aws4_request, "
++        "SignedHeaders=host;x-amz-date, Signature=dummy",
++    )
++    try:
++        resp = urllib.request.urlopen(req)
++        body = resp.read().decode("utf-8")
++        if body.strip():
++            return 0, json.loads(body)
++        return 0, {}
++    except urllib.error.HTTPError as e:
++        body = e.read().decode("utf-8")
++        try:
++            j = json.loads(body)
++        except Exception:
++            j = {"__type": "UnknownError", "message": body}
++        return ERR_SERVICE, j
++    except Exception as e:
++        return ERR_INTERNAL, {"__type": "InternalError", "message": str(e)}
++
++
++def call_paginated(op, payload, result_key):
++    """Auto-paginate a list operation, aggregating result_key entries."""
++    aggregated = []
++    base = dict(payload)
++    # If the user supplied Limit or Marker, don't auto-paginate.
++    user_marker = "Marker" in base
++    first_resp = None
++    marker = base.get("Marker")
++    while True:
++        p = dict(base)
++        if marker is not None:
++            p["Marker"] = marker
++        elif "Marker" in p:
++            del p["Marker"]
++        code, resp = call(op, p)
++        if code != 0:
++            return code, resp
++        if first_resp is None:
++            first_resp = resp
++        aggregated.extend(resp.get(result_key, []))
++        next_marker = resp.get("NextMarker")
++        truncated = resp.get("Truncated")
++        # Stop if user explicitly paginated, or no more pages.
++        if user_marker:
++            break
++        if truncated and next_marker:
++            marker = next_marker
++            continue
++        break
++    out = dict(first_resp)
++    out[result_key] = aggregated
++    if not user_marker:
++        out["Truncated"] = False
++        out.pop("NextMarker", None)
++    return 0, out
++
++
++def usage_error(msg):
++    eprint(msg)
++    sys.exit(ERR_USAGE)
++
++
++def resolve_blob(val):
++    if val.startswith("fileb://"):
++        path = val[len("fileb://"):]
++        with open(path, "rb") as f:
++            raw = f.read()
++        return base64.b64encode(raw).decode("ascii")
++    if val.startswith("file://"):
++        path = val[len("file://"):]
++        with open(path, "r") as f:
++            return f.read().strip()
++    return val
++
++
++def resolve_text_from_file(val):
++    if val.startswith("file://"):
++        path = val[len("file://"):]
++        with open(path, "r") as f:
++            return f.read()
++    return val
++
++
++class Parser:
++    def __init__(self, argv):
++        self.argv = argv
++
++    def parse(self, spec):
++        result = {}
++        seen = set()
++        argv = self.argv
++        i = 0
++        n = len(argv)
++        while i < n:
++            tok = argv[i]
++            if not tok.startswith("--"):
++                usage_error("Unknown argument: " + tok)
++            if tok in GLOBAL_BOOL_FLAGS:
++                i += 1
++                continue
++            if tok in GLOBAL_VALUE_FLAGS:
++                i += 2
++                continue
++            eqval = None
++            base = tok
++            if "=" in tok:
++                base, eqval = tok.split("=", 1)
++            if base not in spec:
++                usage_error("Unknown options: " + tok)
++            param, typ = spec[base]
++            if base in seen:
++                usage_error("Duplicate flag: " + base)
++            seen.add(base)
++            if typ == "flag":
++                result[param] = True
++                i += 1
++                continue
++            if eqval is not None:
++                val = eqval
++                i += 1
++            else:
++                if i + 1 >= n:
++                    usage_error("Missing value for " + base)
++                val = argv[i + 1]
++                i += 2
++            if typ == "int":
++                try:
++                    result[param] = int(val)
++                except ValueError:
++                    usage_error("Invalid int for " + base)
++            elif typ == "blob":
++                try:
++                    result[param] = resolve_blob(val)
++                except OSError as e:
++                    eprint(str(e))
++                    sys.exit(ERR_INTERNAL)
++            else:
++                result[param] = val
++        return result
++
++
++def print_json(obj):
++    sys.stdout.write(json.dumps(obj, indent=4) + "\n")
++
++
++def finish(code, resp, empty_ok=False):
++    if code == 0:
++        if resp:
++            print_json(resp)
++        sys.exit(0)
++    eprint(json.dumps(resp))
++    sys.exit(code)
++
++
++def parse_tags(val):
++    val = val.strip()
++    if val.startswith("["):
++        return json.loads(val)
++    tags = []
++    for item in val.split():
++        d = {}
++        for part in item.split(","):
++            if "=" in part:
++                k, v = part.split("=", 1)
++                d[k] = v
++        tags.append(d)
++    return tags
++
++
++def check_marker(parsed):
++    if "Marker" in parsed:
++        m = parsed["Marker"]
++        if m is None or m == "":
++            eprint(json.dumps({
++                "__type": "ValidationException",
++                "message": "Invalid Marker: marker must not be empty",
++            }))
++            sys.exit(ERR_SERVICE)
++
++
++def do_create_key(args):
++    spec = {
++        "--policy": ("Policy", "str"),
++        "--description": ("Description", "str"),
++        "--key-usage": ("KeyUsage", "str"),
++        "--customer-master-key-spec": ("KeySpec", "str"),
++        "--key-spec": ("KeySpec", "str"),
++        "--origin": ("Origin", "str"),
++        "--custom-key-store-id": ("CustomKeyStoreId", "str"),
++        "--bypass-policy-lockout-safety-check": ("BypassPolicyLockoutSafetyCheck", "flag"),
++        "--tags": ("Tags", "str"),
++        "--multi-region": ("MultiRegion", "flag"),
++        "--xks-key-id": ("XksKeyId", "str"),
++    }
++    parsed = Parser(args).parse(spec)
++    payload = {}
++    for k in ("Policy", "Description", "KeyUsage", "KeySpec", "Origin",
++              "CustomKeyStoreId", "XksKeyId"):
++        if k in parsed:
++            payload[k] = parsed[k]
++    if "MultiRegion" in parsed:
++        payload["MultiRegion"] = True
++    if "BypassPolicyLockoutSafetyCheck" in parsed:
++        payload["BypassPolicyLockoutSafetyCheck"] = True
++    if "Tags" in parsed:
++        payload["Tags"] = parse_tags(parsed["Tags"])
++    code, resp = call("CreateKey", payload)
++    finish(code, resp)
++
++
++def do_describe_key(args):
++    spec = {"--key-id": ("KeyId", "str"), "--grant-tokens": ("GrantTokens", "str")}
++    parsed = Parser(args).parse(spec)
++    if "KeyId" not in parsed:
++        usage_error("Missing required parameter: --key-id")
++    code, resp = call("DescribeKey", {"KeyId": parsed["KeyId"]})
++    finish(code, resp)
++
++
++def do_list_keys(args):
++    spec = {"--limit": ("Limit", "int"), "--marker": ("Marker", "str")}
++    parsed = Parser(args).parse(spec)
++    check_marker(parsed)
++    payload = {}
++    if "Limit" in parsed:
++        payload["Limit"] = parsed["Limit"]
++    if "Marker" in parsed:
++        payload["Marker"] = parsed["Marker"]
++    if "Limit" in parsed or "Marker" in parsed:
++        code, resp = call("ListKeys", payload)
++    else:
++        code, resp = call_paginated("ListKeys", payload, "Keys")
++    finish(code, resp)
++
++
++def _one_keyid(op, args, empty_ok=True):
++    spec = {"--key-id": ("KeyId", "str")}
++    parsed = Parser(args).parse(spec)
++    if "KeyId" not in parsed:
++        usage_error("Missing required parameter: --key-id")
++    code, resp = call(op, {"KeyId": parsed["KeyId"]})
++    finish(code, resp, empty_ok=empty_ok)
++
++
++def do_enable_key(args):
++    _one_keyid("EnableKey", args)
++
++
++def do_disable_key(args):
++    _one_keyid("DisableKey", args)
++
++
++def do_cancel_key_deletion(args):
++    _one_keyid("CancelKeyDeletion", args, empty_ok=False)
++
++
++def do_schedule_key_deletion(args):
++    spec = {
++        "--key-id": ("KeyId", "str"),
++        "--pending-window-in-days": ("PendingWindowInDays", "int"),
++    }
++    parsed = Parser(args).parse(spec)
++    if "KeyId" not in parsed:
++        usage_error("Missing required parameter: --key-id")
++    payload = {"KeyId": parsed["KeyId"]}
++    if "PendingWindowInDays" in parsed:
++        payload["PendingWindowInDays"] = parsed["PendingWindowInDays"]
++    code, resp = call("ScheduleKeyDeletion", payload)
++    finish(code, resp, empty_ok=False)
++
++
++def do_create_alias(args):
++    spec = {
++        "--alias-name": ("AliasName", "str"),
++        "--target-key-id": ("TargetKeyId", "str"),
++    }
++    parsed = Parser(args).parse(spec)
++    if "AliasName" not in parsed:
++        usage_error("Missing required parameter: --alias-name")
++    if "TargetKeyId" not in parsed:
++        usage_error("Missing required parameter: --target-key-id")
++    payload = {"AliasName": parsed["AliasName"], "TargetKeyId": parsed["TargetKeyId"]}
++    code, resp = call("CreateAlias", payload)
++    finish(code, resp, empty_ok=True)
++
++
++def do_list_aliases(args):
++    spec = {
++        "--key-id": ("KeyId", "str"),
++        "--limit": ("Limit", "int"),
++        "--marker": ("Marker", "str"),
++    }
++    parsed = Parser(args).parse(spec)
++    check_marker(parsed)
++    payload = {}
++    for k in ("KeyId", "Limit", "Marker"):
++        if k in parsed:
++            payload[k] = parsed[k]
++    if "Limit" in parsed or "Marker" in parsed:
++        code, resp = call("ListAliases", payload)
++    else:
++        code, resp = call_paginated("ListAliases", payload, "Aliases")
++    finish(code, resp)
++
++
++def do_delete_alias(args):
++    spec = {"--alias-name": ("AliasName", "str")}
++    parsed = Parser(args).parse(spec)
++    if "AliasName" not in parsed:
++        usage_error("Missing required parameter: --alias-name")
++    code, resp = call("DeleteAlias", {"AliasName": parsed["AliasName"]})
++    finish(code, resp, empty_ok=True)
++
++
++def do_update_alias(args):
++    spec = {
++        "--alias-name": ("AliasName", "str"),
++        "--target-key-id": ("TargetKeyId", "str"),
++    }
++    parsed = Parser(args).parse(spec)
++    if "AliasName" not in parsed:
++        usage_error("Missing required parameter: --alias-name")
++    if "TargetKeyId" not in parsed:
++        usage_error("Missing required parameter: --target-key-id")
++    code, resp = call("UpdateAlias", {"AliasName": parsed["AliasName"], "TargetKeyId": parsed["TargetKeyId"]})
++    finish(code, resp, empty_ok=True)
++
++
++def do_encrypt(args):
++    spec = {
++        "--key-id": ("KeyId", "str"),
++        "--plaintext": ("Plaintext", "blob"),
++        "--encryption-algorithm": ("EncryptionAlgorithm", "str"),
++        "--encryption-context": ("EncryptionContext", "str"),
++        "--grant-tokens": ("GrantTokens", "str"),
++        "--dry-run": ("DryRun", "flag"),
++    }
++    parsed = Parser(args).parse(spec)
++    if "KeyId" not in parsed:
++        usage_error("Missing required parameter: --key-id")
++    if "Plaintext" not in parsed:
++        usage_error("Missing required parameter: --plaintext")
++    payload = {"KeyId": parsed["KeyId"], "Plaintext": parsed["Plaintext"]}
++    if "EncryptionAlgorithm" in parsed:
++        payload["EncryptionAlgorithm"] = parsed["EncryptionAlgorithm"]
++    code, resp = call("Encrypt", payload)
++    finish(code, resp)
++
++
++def do_decrypt(args):
++    spec = {
++        "--ciphertext-blob": ("CiphertextBlob", "blob"),
++        "--key-id": ("KeyId", "str"),
++        "--encryption-algorithm": ("EncryptionAlgorithm", "str"),
++        "--encryption-context": ("EncryptionContext", "str"),
++        "--grant-tokens": ("GrantTokens", "str"),
++        "--recipient": ("Recipient", "str"),
++        "--dry-run": ("DryRun", "flag"),
++    }
++    parsed = Parser(args).parse(spec)
++    if "CiphertextBlob" not in parsed:
++        usage_error("Missing required parameter: --ciphertext-blob")
++    payload = {"CiphertextBlob": parsed["CiphertextBlob"]}
++    if "KeyId" in parsed:
++        payload["KeyId"] = parsed["KeyId"]
++    if "EncryptionAlgorithm" in parsed:
++        payload["EncryptionAlgorithm"] = parsed["EncryptionAlgorithm"]
++    code, resp = call("Decrypt", payload)
++    finish(code, resp)
++
++
++def do_re_encrypt(args):
++    spec = {
++        "--ciphertext-blob": ("CiphertextBlob", "blob"),
++        "--destination-key-id": ("DestinationKeyId", "str"),
++        "--source-key-id": ("SourceKeyId", "str"),
++        "--source-encryption-algorithm": ("SourceEncryptionAlgorithm", "str"),
++        "--destination-encryption-algorithm": ("DestinationEncryptionAlgorithm", "str"),
++        "--grant-tokens": ("GrantTokens", "str"),
++        "--dry-run": ("DryRun", "flag"),
++    }
++    parsed = Parser(args).parse(spec)
++    if "CiphertextBlob" not in parsed:
++        usage_error("Missing required parameter: --ciphertext-blob")
++    if "DestinationKeyId" not in parsed:
++        usage_error("Missing required parameter: --destination-key-id")
++    payload = {
++        "CiphertextBlob": parsed["CiphertextBlob"],
++        "DestinationKeyId": parsed["DestinationKeyId"],
++    }
++    for k in ("SourceKeyId", "SourceEncryptionAlgorithm", "DestinationEncryptionAlgorithm"):
++        if k in parsed:
++            payload[k] = parsed[k]
++    code, resp = call("ReEncrypt", payload)
++    finish(code, resp)
++
++
++def do_generate_data_key(args):
++    spec = {
++        "--key-id": ("KeyId", "str"),
++        "--key-spec": ("KeySpec", "str"),
++        "--number-of-bytes": ("NumberOfBytes", "int"),
++        "--encryption-context": ("EncryptionContext", "str"),
++        "--grant-tokens": ("GrantTokens", "str"),
++    }
++    parsed = Parser(args).parse(spec)
++    if "KeyId" not in parsed:
++        usage_error("Missing required parameter: --key-id")
++    payload = {"KeyId": parsed["KeyId"]}
++    for k in ("KeySpec", "NumberOfBytes"):
++        if k in parsed:
++            payload[k] = parsed[k]
++    code, resp = call("GenerateDataKey", payload)
++    finish(code, resp)
++
++
++def do_generate_data_key_without_plaintext(args):
++    spec = {
++        "--key-id": ("KeyId", "str"),
++        "--key-spec": ("KeySpec", "str"),
++        "--number-of-bytes": ("NumberOfBytes", "int"),
++        "--encryption-context": ("EncryptionContext", "str"),
++        "--grant-tokens": ("GrantTokens", "str"),
++    }
++    parsed = Parser(args).parse(spec)
++    if "KeyId" not in parsed:
++        usage_error("Missing required parameter: --key-id")
++    payload = {"KeyId": parsed["KeyId"]}
++    for k in ("KeySpec", "NumberOfBytes"):
++        if k in parsed:
++            payload[k] = parsed[k]
++    code, resp = call("GenerateDataKeyWithoutPlaintext", payload)
++    finish(code, resp)
++
++
++def do_generate_random(args):
++    spec = {
++        "--number-of-bytes": ("NumberOfBytes", "int"),
++        "--custom-key-store-id": ("CustomKeyStoreId", "str"),
++    }
++    parsed = Parser(args).parse(spec)
++    payload = {}
++    for k in ("NumberOfBytes", "CustomKeyStoreId"):
++        if k in parsed:
++            payload[k] = parsed[k]
++    code, resp = call("GenerateRandom", payload)
++    finish(code, resp)
++
++
++def do_update_key_description(args):
++    spec = {
++        "--key-id": ("KeyId", "str"),
++        "--description": ("Description", "str"),
++    }
++    parsed = Parser(args).parse(spec)
++    if "KeyId" not in parsed:
++        usage_error("Missing required parameter: --key-id")
++    if "Description" not in parsed:
++        usage_error("Missing required parameter: --description")
++    code, resp = call("UpdateKeyDescription", {
++        "KeyId": parsed["KeyId"], "Description": parsed["Description"]})
++    finish(code, resp, empty_ok=True)
++
++
++def do_enable_key_rotation(args):
++    _one_keyid("EnableKeyRotation", args)
++
++
++def do_disable_key_rotation(args):
++    _one_keyid("DisableKeyRotation", args)
++
++
++def do_get_key_rotation_status(args):
++    spec = {"--key-id": ("KeyId", "str")}
++    parsed = Parser(args).parse(spec)
++    if "KeyId" not in parsed:
++        usage_error("Missing required parameter: --key-id")
++    code, resp = call("GetKeyRotationStatus", {"KeyId": parsed["KeyId"]})
++    finish(code, resp)
++
++
++def do_tag_resource(args):
++    spec = {"--key-id": ("KeyId", "str"), "--tags": ("Tags", "str")}
++    parsed = Parser(args).parse(spec)
++    if "KeyId" not in parsed:
++        usage_error("Missing required parameter: --key-id")
++    if "Tags" not in parsed:
++        usage_error("Missing required parameter: --tags")
++    code, resp = call("TagResource", {
++        "KeyId": parsed["KeyId"], "Tags": parse_tags(parsed["Tags"])})
++    finish(code, resp, empty_ok=True)
++
++
++def do_untag_resource(args):
++    spec = {"--key-id": ("KeyId", "str"), "--tag-keys": ("TagKeys", "str")}
++    parsed = Parser(args).parse(spec)
++    if "KeyId" not in parsed:
++        usage_error("Missing required parameter: --key-id")
++    if "TagKeys" not in parsed:
++        usage_error("Missing required parameter: --tag-keys")
++    v = parsed["TagKeys"].strip()
++    if v.startswith("["):
++        keys = json.loads(v)
++    else:
++        keys = v.split()
++    code, resp = call("UntagResource", {"KeyId": parsed["KeyId"], "TagKeys": keys})
++    finish(code, resp, empty_ok=True)
++
++
++def do_list_resource_tags(args):
++    spec = {
++        "--key-id": ("KeyId", "str"),
++        "--limit": ("Limit", "int"),
++        "--marker": ("Marker", "str"),
++    }
++    parsed = Parser(args).parse(spec)
++    if "KeyId" not in parsed:
++        usage_error("Missing required parameter: --key-id")
++    check_marker(parsed)
++    payload = {"KeyId": parsed["KeyId"]}
++    for k in ("Limit", "Marker"):
++        if k in parsed:
++            payload[k] = parsed[k]
++    if "Limit" in parsed or "Marker" in parsed:
++        code, resp = call("ListResourceTags", payload)
++    else:
++        code, resp = call_paginated("ListResourceTags", payload, "Tags")
++    finish(code, resp)
++
++
++def do_get_key_policy(args):
++    spec = {"--key-id": ("KeyId", "str"), "--policy-name": ("PolicyName", "str")}
++    parsed = Parser(args).parse(spec)
++    if "KeyId" not in parsed:
++        usage_error("Missing required parameter: --key-id")
++    payload = {"KeyId": parsed["KeyId"], "PolicyName": parsed.get("PolicyName", "default")}
++    code, resp = call("GetKeyPolicy", payload)
++    finish(code, resp)
++
++
++def do_put_key_policy(args):
++    spec = {
++        "--key-id": ("KeyId", "str"),
++        "--policy-name": ("PolicyName", "str"),
++        "--policy": ("Policy", "str"),
++        "--bypass-policy-lockout-safety-check": ("BypassPolicyLockoutSafetyCheck", "flag"),
++    }
++    parsed = Parser(args).parse(spec)
++    if "KeyId" not in parsed:
++        usage_error("Missing required parameter: --key-id")
++    if "Policy" not in parsed:
++        usage_error("Missing required parameter: --policy")
++    policy = resolve_text_from_file(parsed["Policy"])
++    payload = {
++        "KeyId": parsed["KeyId"],
++        "PolicyName": parsed.get("PolicyName", "default"),
++        "Policy": policy,
++    }
++    if "BypassPolicyLockoutSafetyCheck" in parsed:
++        payload["BypassPolicyLockoutSafetyCheck"] = True
++    code, resp = call("PutKeyPolicy", payload)
++    finish(code, resp, empty_ok=True)
++
++
++def do_sign(args):
++    spec = {
++        "--key-id": ("KeyId", "str"),
++        "--message": ("Message", "blob"),
++        "--message-type": ("MessageType", "str"),
++        "--signing-algorithm": ("SigningAlgorithm", "str"),
++        "--grant-tokens": ("GrantTokens", "str"),
++    }
++    parsed = Parser(args).parse(spec)
++    if "KeyId" not in parsed:
++        usage_error("Missing required parameter: --key-id")
++    if "Message" not in parsed:
++        usage_error("Missing required parameter: --message")
++    if "SigningAlgorithm" not in parsed:
++        usage_error("Missing required parameter: --signing-algorithm")
++    payload = {
++        "KeyId": parsed["KeyId"],
++        "Message": parsed["Message"],
++        "SigningAlgorithm": parsed["SigningAlgorithm"],
++    }
++    if "MessageType" in parsed:
++        payload["MessageType"] = parsed["MessageType"]
++    code, resp = call("Sign", payload)
++    finish(code, resp)
++
++
++def do_verify(args):
++    spec = {
++        "--key-id": ("KeyId", "str"),
++        "--message": ("Message", "blob"),
++        "--message-type": ("MessageType", "str"),
++        "--signature": ("Signature", "blob"),
++        "--signing-algorithm": ("SigningAlgorithm", "str"),
++        "--grant-tokens": ("GrantTokens", "str"),
++    }
++    parsed = Parser(args).parse(spec)
++    for req in ("KeyId", "Message", "Signature", "SigningAlgorithm"):
++        if req not in parsed:
++            usage_error("Missing required parameter for verify: " + req)
++    payload = {
++        "KeyId": parsed["KeyId"],
++        "Message": parsed["Message"],
++        "Signature": parsed["Signature"],
++        "SigningAlgorithm": parsed["SigningAlgorithm"],
++    }
++    if "MessageType" in parsed:
++        payload["MessageType"] = parsed["MessageType"]
++    code, resp = call("Verify", payload)
++    finish(code, resp)
++
++
++def do_get_public_key(args):
++    spec = {"--key-id": ("KeyId", "str"), "--grant-tokens": ("GrantTokens", "str")}
++    parsed = Parser(args).parse(spec)
++    if "KeyId" not in parsed:
++        usage_error("Missing required parameter: --key-id")
++    code, resp = call("GetPublicKey", {"KeyId": parsed["KeyId"]})
++    finish(code, resp)
++
++
++def do_generate_mac(args):
++    spec = {
++        "--key-id": ("KeyId", "str"),
++        "--message": ("Message", "blob"),
++        "--mac-algorithm": ("MacAlgorithm", "str"),
++        "--grant-tokens": ("GrantTokens", "str"),
++    }
++    parsed = Parser(args).parse(spec)
++    for req in ("KeyId", "Message", "MacAlgorithm"):
++        if req not in parsed:
++            usage_error("Missing required parameter for generate-mac: " + req)
++    payload = {
++        "KeyId": parsed["KeyId"],
++        "Message": parsed["Message"],
++        "MacAlgorithm": parsed["MacAlgorithm"],
++    }
++    code, resp = call("GenerateMac", payload)
++    finish(code, resp)
++
++
++def do_verify_mac(args):
++    spec = {
++        "--key-id": ("KeyId", "str"),
++        "--message": ("Message", "blob"),
++        "--mac": ("Mac", "blob"),
++        "--mac-algorithm": ("MacAlgorithm", "str"),
++        "--grant-tokens": ("GrantTokens", "str"),
++    }
++    parsed = Parser(args).parse(spec)
++    for req in ("KeyId", "Message", "Mac", "MacAlgorithm"):
++        if req not in parsed:
++            usage_error("Missing required parameter for verify-mac: " + req)
++    payload = {
++        "KeyId": parsed["KeyId"],
++        "Message": parsed["Message"],
++        "Mac": parsed["Mac"],
++        "MacAlgorithm": parsed["MacAlgorithm"],
++    }
++    code, resp = call("VerifyMac", payload)
++    finish(code, resp)
++
++
++DISPATCH = {
++    "create-key": do_create_key,
++    "describe-key": do_describe_key,
++    "list-keys": do_list_keys,
++    "enable-key": do_enable_key,
++    "disable-key": do_disable_key,
++    "schedule-key-deletion": do_schedule_key_deletion,
++    "cancel-key-deletion": do_cancel_key_deletion,
++    "create-alias": do_create_alias,
++    "list-aliases": do_list_aliases,
++    "delete-alias": do_delete_alias,
++    "update-alias": do_update_alias,
++    "encrypt": do_encrypt,
++    "decrypt": do_decrypt,
++    "re-encrypt": do_re_encrypt,
++    "generate-data-key": do_generate_data_key,
++    "generate-data-key-without-plaintext": do_generate_data_key_without_plaintext,
++    "generate-random": do_generate_random,
++    "update-key-description": do_update_key_description,
++    "enable-key-rotation": do_enable_key_rotation,
++    "disable-key-rotation": do_disable_key_rotation,
++    "get-key-rotation-status": do_get_key_rotation_status,
++    "tag-resource": do_tag_resource,
++    "untag-resource": do_untag_resource,
++    "list-resource-tags": do_list_resource_tags,
++    "get-key-policy": do_get_key_policy,
++    "put-key-policy": do_put_key_policy,
++    "sign": do_sign,
++    "verify": do_verify,
++    "get-public-key": do_get_public_key,
++    "generate-mac": do_generate_mac,
++    "verify-mac": do_verify_mac,
++}
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3:
++        usage_error("usage: main.py kms <subcommand> ...")
++    if argv[1] != "kms":
++        usage_error("unknown service: " + argv[1])
++    sub = argv[2]
++    if sub not in DISPATCH:
++        usage_error("unknown subcommand: " + sub)
++    try:
++        DISPATCH[sub](argv[3:])
++    except SystemExit:
++        raise
++    except Exception as e:
++        eprint(json.dumps({"__type": "InternalError", "message": str(e)}))
++        sys.exit(ERR_INTERNAL)
++
++
++if __name__ == "__main__":
++    main()

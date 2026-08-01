@@ -1,0 +1,181 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,175 @@
++import sys
++import os
++import json
++import base64
++import urllib.request
++import urllib.error
++
++USAGE_EXIT = 252
++SERVICE_EXIT = 254
++
++SPECS = {
++    "scan": {
++        "target": "Scan",
++        "flags": {
++            "--attributes-to-get": ("AttributesToGet", "json"),
++            "--conditional-operator": ("ConditionalOperator", "str"),
++            "--consistent-read": ("ConsistentRead", "bool"),
++            "--no-consistent-read": ("ConsistentRead", "boolfalse"),
++            "--exclusive-start-key": ("ExclusiveStartKey", "json"),
++            "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++            "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++            "--filter-expression": ("FilterExpression", "str"),
++            "--index-name": ("IndexName", "str"),
++            "--limit": ("Limit", "int"),
++            "--projection-expression": ("ProjectionExpression", "str"),
++            "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++            "--scan-filter": ("ScanFilter", "json"),
++            "--segment": ("Segment", "int"),
++            "--select": ("Select", "str"),
++            "--table-name": ("TableName", "str"),
++            "--total-segments": ("TotalSegments", "int"),
++        },
++    },
++    "query": {
++        "target": "Query",
++        "flags": {
++            "--attributes-to-get": ("AttributesToGet", "json"),
++            "--conditional-operator": ("ConditionalOperator", "str"),
++            "--consistent-read": ("ConsistentRead", "bool"),
++            "--no-consistent-read": ("ConsistentRead", "boolfalse"),
++            "--exclusive-start-key": ("ExclusiveStartKey", "json"),
++            "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++            "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++            "--filter-expression": ("FilterExpression", "str"),
++            "--index-name": ("IndexName", "str"),
++            "--key-condition-expression": ("KeyConditionExpression", "str"),
++            "--key-conditions": ("KeyConditions", "json"),
++            "--limit": ("Limit", "int"),
++            "--projection-expression": ("ProjectionExpression", "str"),
++            "--query-filter": ("QueryFilter", "json"),
++            "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++            "--scan-index-forward": ("ScanIndexForward", "bool"),
++            "--no-scan-index-forward": ("ScanIndexForward", "boolfalse"),
++            "--select": ("Select", "str"),
++            "--table-name": ("TableName", "str"),
++        },
++    },
++}
++
++
++def usage_error(msg):
++    sys.stderr.write("usage error: " + msg + "\n")
++    sys.exit(USAGE_EXIT)
++
++
++def get_endpoint():
++    return os.environ.get("AWS_ENDPOINT_URL_DYNAMODB") or os.environ["AWS_ENDPOINT_URL"]
++
++
++def call(target, payload):
++    endpoint = get_endpoint()
++    data = json.dumps(payload).encode("utf-8")
++    req = urllib.request.Request(endpoint, data=data, method="POST")
++    req.add_header("Content-Type", "application/x-amz-json-1.0")
++    req.add_header("X-Amz-Target", "DynamoDB_20120810." + target)
++    req.add_header("Authorization",
++                   "AWS4-HMAC-SHA256 Credential=dummy/20120810/us-east-1/dynamodb/aws4_request, "
++                   "SignedHeaders=content-type;host;x-amz-target, Signature=dummy")
++    try:
++        resp = urllib.request.urlopen(req)
++        body = resp.read().decode("utf-8")
++        return 0, body
++    except urllib.error.HTTPError as e:
++        body = e.read().decode("utf-8")
++        code = "UnknownError"
++        try:
++            parsed = json.loads(body)
++            t = parsed.get("__type", "")
++            if t:
++                code = t.split("#")[-1]
++            msg = parsed.get("message") or parsed.get("Message") or ""
++        except Exception:
++            msg = body
++        sys.stderr.write(code + ": " + msg + "\n")
++        return SERVICE_EXIT, None
++    except urllib.error.URLError as e:
++        sys.stderr.write("ConnectionError: " + str(e) + "\n")
++        return SERVICE_EXIT, None
++
++
++def parse_args(spec, args):
++    flags = spec["flags"]
++    payload = {}
++    i = 0
++    while i < len(args):
++        tok = args[i]
++        if not tok.startswith("--"):
++            usage_error("Unexpected argument: " + tok)
++        if "=" in tok:
++            name, val = tok.split("=", 1)
++            has_inline = True
++        else:
++            name = tok
++            val = None
++            has_inline = False
++        if name not in flags:
++            usage_error("Unknown option: " + name)
++        field, kind = flags[name]
++        if field in payload:
++            usage_error("Duplicate option: " + name)
++        if kind in ("bool", "boolfalse"):
++            if has_inline:
++                usage_error("Option does not take a value: " + name)
++            payload[field] = (kind == "bool")
++            i += 1
++            continue
++        if not has_inline:
++            if i + 1 >= len(args):
++                usage_error("Option requires a value: " + name)
++            val = args[i + 1]
++            i += 2
++        else:
++            i += 1
++        if val == "" or val is None:
++            usage_error("Option requires a value: " + name)
++        if kind == "str":
++            payload[field] = val
++        elif kind == "int":
++            try:
++                payload[field] = int(val)
++            except ValueError:
++                usage_error("Invalid integer for " + name + ": " + val)
++        elif kind == "json":
++            try:
++                payload[field] = json.loads(val)
++            except ValueError:
++                usage_error("Invalid JSON for " + name + ": " + val)
++    return payload
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3:
++        usage_error("missing command")
++    sub = argv[2]
++    if sub not in SPECS:
++        usage_error("Unknown command: " + sub)
++    spec = SPECS[sub]
++    payload = parse_args(spec, argv[3:])
++    if "TableName" not in payload:
++        usage_error("The following arguments are required: --table-name")
++    code, body = call(spec["target"], payload)
++    if code == 0:
++        try:
++            parsed = json.loads(body)
++        except Exception:
++            parsed = {}
++        sys.stdout.write(json.dumps(parsed, indent=4) + "\n")
++        sys.exit(0)
++    else:
++        sys.exit(code)
++
++
++if __name__ == "__main__":
++    main()

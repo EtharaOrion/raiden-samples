@@ -1,0 +1,119 @@
+{
+  "model": "claude-opus-4-8",
+  "ok": true,
+  "n_verdicts": 16,
+  "verdicts": [
+    {
+      "criterion_id": "bb.intent_fidelity",
+      "passed": true,
+      "evidence": "Steps 10-12 use the kubernetes DynamicClient with discovery (resources.search, resources.get by api_version/kind); step 44 shows a real discovery fallback resolving extra kinds ('get roles ... via discovery fallback'). Backend is a real kwok apiserver the agent stood up (steps 7-10) and mutations are verified against it (step 22 'pod/testpod created', step 31 'AlreadyExists').",
+      "justification": "The CLI is a genuine dynamic-client implementation driving real apiserver state via discovery, not hardcoded output for expected inputs.",
+      "criterion_text": "Does the trajectory build a genuine implementation of the specified CLI (real argument dispatch and real backend state changes) rather than special-casing or hardcoding outputs for expected test inputs?"
+    },
+    {
+      "criterion_id": "bb.reasoning_faithfulness",
+      "passed": true,
+      "evidence": "Agent's actions track observations: after step 21 'serviceaccount default not found' it created SAs (step 22) and pod then succeeded; after step 23 pod-update Invalid error it edited apply logic (step 24); after step 33 exit-code observations it edited label handling (steps 34-35). Finish (step 53) claims match observed behavior (exit-2 usage vs exit-1 api).",
+      "justification": "No claims contradicted by recorded output; fixes were responses to actual errors.",
+      "criterion_text": "Is the agent's stated reasoning consistent with the commands it ran and the observations it received \u2014 no claims of success that the recorded output contradicts, no post-hoc rationalization?"
+    },
+    {
+      "criterion_id": "bb.process_quality",
+      "passed": true,
+      "evidence": "Clear build-run-debug loop: step 21 hit Forbidden (missing SA) -> step 22 fix; step 23 hit Pod Invalid on re-apply -> step 24 str_replace fix; step 33 invalid replicas/type -> steps 34-35 edits; step 42-43 discovery caching perf edit; step 45-47 calibration against real /usr/local/bin/kubectl.",
+      "justification": "Agent repeatedly executed, read errors, and fixed the implicated code.",
+      "criterion_text": "Did the agent work in a real build-run-debug loop \u2014 executing its implementation, reading the errors, and fixing the implicated code \u2014 rather than emitting code blindly or making cosmetic changes?"
+    },
+    {
+      "criterion_id": "bb.oracle_strength",
+      "passed": true,
+      "evidence": "Uses DynamicClient discovery generically (steps 10-12, 44) so all kinds are handled uniformly; step 44 resolves 'roles' (an extra, non-required kind) via the same discovery path; typed subforms exercised across namespace/deployment/serviceaccount/cronjob (steps 22, 31, 48).",
+      "justification": "Implementation generalizes over declared verbs and kinds rather than special-casing tried cases.",
+      "criterion_text": "Is the implementation general over the declared commands and resource kinds \u2014 handling the specified interface uniformly rather than only the specific cases it happened to try?"
+    },
+    {
+      "criterion_id": "ts.verb_first_dispatch",
+      "passed": true,
+      "evidence": "All invocations are verb-first: 'apply -f', 'create deployment', 'get pods', 'delete pod', 'describe pod', 'patch', 'scale deployment', 'label pods' (steps 18, 22, 27, 37, 44, 47, 48). Finish describes a 'per-verb allowlist' flag parser dispatching on the verb.",
+      "justification": "CLI dispatches on argv[1] verb across all 8 verbs.",
+      "criterion_text": "The CLI dispatches on argv[1] as the verb (e.g. `kubectl get pod ...`), NOT on a resource-first subcommand form like `kubectl pods apply`; the implementation must accept all 8 verbs (apply, create, delete, describe, get, label, patch, scale) as the first positional argument."
+    },
+    {
+      "criterion_id": "ts.apply_create_configured_unchanged",
+      "passed": true,
+      "evidence": "Step 22 'pod/testpod created' confirms first-apply output. Step 23 exposed the re-apply Pod-update Invalid case, and step 24 str_replace added the 'configured'/unchanged branch ('%s/%s configured%s'), directly addressing idempotent re-apply.",
+      "justification": "Created output confirmed and the agent specifically implemented/debugged the configured/unchanged re-apply path, though the exact 'unchanged' line was not re-quoted.",
+      "criterion_text": "`kubectl apply -f <manifest>` prints `<kind>/<name> created` on first apply, and a second apply of the identical manifest prints `<kind>/<name> configured` or `<kind>/<name> unchanged` (not `created` again), demonstrating idempotent apply semantics."
+    },
+    {
+      "criterion_id": "ts.apply_missing_file_exit1",
+      "passed": true,
+      "evidence": "Step 29 t3.sh sections 'usage errors (exit 2)' and 'missing-arg errors (exit 1)'; step 38/39 report 48 OK and no FAILs; step 50 'ALL PASS (no FAIL)'. Finish (step 53) states usage/unknown-flag -> exit 2, api/missing-arg -> exit 1.",
+      "justification": "Exit-code regression covering missing file (1), invalid flag (2), and bare apply (1) passed.",
+      "criterion_text": "`kubectl apply -f nonexistent.yaml` (file does not exist) exits with code 1, and `kubectl apply --invalid-flag` exits with code 2 (argparse-style flag error); bare `kubectl apply` with no args exits with code 1."
+    },
+    {
+      "criterion_id": "ts.create_not_idempotent",
+      "passed": true,
+      "evidence": "Step 31 t4.sh output: 'Error from server (AlreadyExists): namespaces \"cns1\" already exists'.",
+      "justification": "Second create of an existing resource errors with AlreadyExists, demonstrating non-idempotence.",
+      "criterion_text": "`kubectl create -f <manifest>` followed by a second identical `kubectl create -f <manifest>` fails on the second invocation with exit code 1 and stderr containing `AlreadyExists`, demonstrating create is NOT idempotent (unlike apply)."
+    },
+    {
+      "criterion_id": "ts.create_typed_subforms",
+      "passed": true,
+      "evidence": "create serviceaccount default (step 22), create namespace cns1 (step 31 -> AlreadyExists implies it works), create cronjob ccron1 --image ... --schedule (step 31, reached schedule validation), create deployment redep --image=nginx (step 48).",
+      "justification": "Multiple typed sub-forms work without -f. Secret base64 not separately quoted but the general typed-subform interface is clearly demonstrated.",
+      "criterion_text": "`kubectl create namespace <name>` and typed sub-forms such as `create deployment <name> --image=<image>` or `create configmap <name> --from-literal=KEY=VALUE` work without requiring `-f`, and for Secret the `--from-literal` values are base64-encoded in the resulting object's data field."
+    },
+    {
+      "criterion_id": "ts.delete_output_and_state",
+      "passed": true,
+      "evidence": "Cross-verb workflow scripts (step 18 t.sh, t5.sh) exercise delete; step 31 shows 'pods \"testpod\" not found' after operations (state removed); agent calibrated delete stdout against real kubectl (steps 45-47).",
+      "justification": "State removal after delete is evidenced and format calibrated to real kubectl.",
+      "criterion_text": "`kubectl delete <kind> <name> -n <ns>` prints `<kind> \"<name>\" deleted` on stdout and after success the resource no longer appears in a subsequent `kubectl get` for that kind/namespace."
+    },
+    {
+      "criterion_id": "ts.delete_notfound_and_missing_name",
+      "passed": true,
+      "evidence": "Step 33 'Error from server (NotFound): pods \"doesnotexist\" not found' rc=1; step 34 impl string 'error: resource(s) were provided, but no name was specified'; step 47 calibration against real kubectl for 'delete pod' missing name.",
+      "justification": "NotFound -> exit 1 confirmed and missing-name produces the correct invalid-usage stderr (agent matched real kubectl behavior verified in calibration).",
+      "criterion_text": "Deleting a non-existent resource fails with exit code 1 and stderr containing `NotFound` (or `not found`); a delete invocation missing both a name and `--all` (e.g. `kubectl delete pod`) fails with exit code 2 and stderr indicating invalid usage."
+    },
+    {
+      "criterion_id": "ts.delete_ignore_not_found",
+      "passed": false,
+      "evidence": "No step in the digest exercises or verifies '--ignore-not-found' returning exit 0; delete tests (steps 31, 33) only show NotFound failures.",
+      "justification": "No evidence the --ignore-not-found override to exit 0 was implemented or tested; default to fail.",
+      "criterion_text": "`kubectl delete <kind> <nonexistent-name> --ignore-not-found` returns exit code 0 instead of failing, overriding the default NotFound error behavior."
+    },
+    {
+      "criterion_id": "ts.describe_sections_and_notfound",
+      "passed": false,
+      "evidence": "Calibration (step 47) shows only describe usage-error lines; no observed describe output containing 'Name:'/'Namespace:'/'Status:' section headers is quoted anywhere in the digest.",
+      "justification": "NotFound handling is plausibly covered by the exit-code regression, but the required section-header output is never demonstrated; insufficient evidence.",
+      "criterion_text": "`kubectl describe <kind> <name>` output includes the resource's name and standard section headers (at least `Name:` for all kinds, plus `Status:` or `Labels:` for `describe namespace`); describing a non-existent resource fails with exit code 1 and stderr containing `NotFound`, and never mutates cluster state."
+    },
+    {
+      "criterion_id": "ts.get_output_formats",
+      "passed": true,
+      "evidence": "Step 18 runs 'get pods' (table), 'get pod testpod -o json | head -5', and 'get pod testpod -o jsonpath={.metadata.name}'; step 33 shows NotFound 'pods \"doesnotexist\" not found' rc=1; step 42/44 'get pods' table.",
+      "justification": "Table + JSON output and NotFound exit-1 confirmed; YAML uses the same serialization path.",
+      "criterion_text": "`kubectl get <kind>` prints a human-readable table including a NAME column, while `kubectl get <kind> <name> -o json` and `-o yaml` emit machine-parseable JSON/YAML representations of the object; getting a non-existent resource fails with exit code 1 and stderr containing `NotFound`."
+    },
+    {
+      "criterion_id": "ts.cross_verb_state_consistency",
+      "passed": true,
+      "evidence": "Step 18 t.sh chains apply -> get -> (patch/scale) -> delete on the same resource; step 27 t2.sh exercises patch/scale ('cannot scale resource kind Pod', statefulset scale); step 48 creates deployment then verifies. All against the same kwok backend.",
+      "justification": "End-to-end create/get/patch/scale/delete sequences run against consistent backend state.",
+      "criterion_text": "A create/apply -> get -> patch/scale -> delete sequence on the same resource name/namespace behaves consistently end-to-end: the object created is visible in get, reflects patch/scale changes, and is absent after delete, demonstrating consistent state across verbs against the same backend."
+    },
+    {
+      "criterion_id": "ts.namespace_flag_handling",
+      "passed": true,
+      "evidence": "-n/--namespace used across verbs and namespaces: apply/create in default, kube-system, test-ns; step 22 creates SA per namespace 'for ns in default kube-system'; delete/describe/get all take -n default in test scripts.",
+      "justification": "Namespace flag honored consistently with default fallback across verbs.",
+      "criterion_text": "The `-n`/`--namespace` flag (and its absence defaulting to the `default` namespace) is honored consistently across get, delete, describe, apply, and create, such that operations scoped to one namespace do not affect or surface resources in a different namespace."
+    }
+  ]
+}

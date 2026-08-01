@@ -1,0 +1,248 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,242 @@
++import sys
++import os
++import json
++import hashlib
++import urllib.request
++import urllib.error
++
++
++def endpoint():
++    ep = os.environ.get("AWS_ENDPOINT_URL_SQS")
++    if not ep:
++        ep = os.environ.get("AWS_ENDPOINT_URL")
++    if not ep:
++        ep = "http://localhost:9324"
++    return ep.rstrip("/")
++
++
++def region():
++    return os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
++
++
++def call(op, payload):
++    data = json.dumps(payload).encode("utf-8")
++    req = urllib.request.Request(
++        endpoint() + "/",
++        data=data,
++        method="POST",
++    )
++    req.add_header("Content-Type", "application/x-amz-json-1.0")
++    req.add_header("X-Amz-Target", "AmazonSQS." + op)
++    ak = os.environ.get("AWS_ACCESS_KEY_ID", "x")
++    sk = os.environ.get("AWS_SECRET_ACCESS_KEY", "x")
++    req.add_header("Authorization",
++                   "AWS4-HMAC-SHA256 Credential=%s/20200101/%s/sqs/aws4_request, "
++                   "SignedHeaders=host, Signature=00" % (ak, region()))
++    req.add_header("X-Amz-Date", "20200101T000000Z")
++    try:
++        resp = urllib.request.urlopen(req)
++        body = resp.read().decode("utf-8")
++        if body.strip():
++            return 0, json.loads(body)
++        return 0, {}
++    except urllib.error.HTTPError as e:
++        body = e.read().decode("utf-8")
++        sys.stderr.write(body)
++        if body and not body.endswith("\n"):
++            sys.stderr.write("\n")
++        return 254, None
++    except Exception as e:
++        sys.stderr.write(str(e) + "\n")
++        return 255, None
++
++
++def usage_error(msg):
++    sys.stderr.write(str(msg) + "\n")
++    sys.exit(252)
++
++
++FLAG_MAP = {
++    "--queue-name": ("QueueName", "str"),
++    "--queue-url": ("QueueUrl", "str"),
++    "--message-body": ("MessageBody", "str"),
++    "--attributes": ("Attributes", "json"),
++    "--attribute-names": ("AttributeNames", "list"),
++    "--max-number-of-messages": ("MaxNumberOfMessages", "int"),
++    "--visibility-timeout": ("VisibilityTimeout", "int"),
++    "--wait-time-seconds": ("WaitTimeSeconds", "int"),
++    "--receipt-handle": ("ReceiptHandle", "str"),
++    "--delay-seconds": ("DelaySeconds", "int"),
++    "--message-group-id": ("MessageGroupId", "str"),
++    "--queue-name-prefix": ("QueueNamePrefix", "str"),
++    "--next-token": ("NextToken", "str"),
++    "--max-results": ("MaxResults", "int"),
++}
++
++
++def parse_args(argv, allowed):
++    params = {}
++    seen = set()
++    i = 0
++    while i < len(argv):
++        tok = argv[i]
++        if not tok.startswith("--"):
++            usage_error("Unknown argument: %s" % tok)
++        if tok not in FLAG_MAP or tok not in allowed:
++            usage_error("Unknown option: %s" % tok)
++        key, typ = FLAG_MAP[tok]
++        if key in seen:
++            usage_error("Duplicate option: %s" % tok)
++        seen.add(key)
++        if i + 1 >= len(argv):
++            usage_error("Missing value for %s" % tok)
++        val = argv[i + 1]
++        if val == "" or val.startswith("--"):
++            if val == "":
++                usage_error("Empty value for %s" % tok)
++        if typ == "str":
++            params[key] = val
++        elif typ == "int":
++            try:
++                params[key] = int(val)
++            except ValueError:
++                usage_error("Invalid int for %s" % tok)
++        elif typ == "json":
++            try:
++                params[key] = json.loads(val)
++            except Exception:
++                usage_error("Invalid JSON for %s" % tok)
++        elif typ == "list":
++            try:
++                parsed = json.loads(val)
++                if isinstance(parsed, list):
++                    params[key] = parsed
++                else:
++                    params[key] = [val]
++            except Exception:
++                params[key] = [val]
++        i += 2
++    return params
++
++
++def require(params, keys):
++    for k in keys:
++        if k not in params:
++            usage_error("Missing required parameter: %s" % k)
++
++
++def out(obj):
++    sys.stdout.write(json.dumps(obj, indent=4))
++    sys.stdout.write("\n")
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3 or argv[1] != "sqs":
++        usage_error("usage: main.py sqs <command>")
++    cmd = argv[2]
++    rest = argv[3:]
++
++    if cmd == "create-queue":
++        allowed = ["--queue-name", "--attributes"]
++        p = parse_args(rest, allowed)
++        require(p, ["QueueName"])
++        payload = {"QueueName": p["QueueName"]}
++        if "Attributes" in p:
++            payload["Attributes"] = p["Attributes"]
++        rc, r = call("CreateQueue", payload)
++        if rc == 0:
++            out(r)
++        sys.exit(rc)
++
++    elif cmd == "list-queues":
++        allowed = ["--queue-name-prefix", "--next-token", "--max-results"]
++        p = parse_args(rest, allowed)
++        payload = {}
++        if "QueueNamePrefix" in p:
++            payload["QueueNamePrefix"] = p["QueueNamePrefix"]
++        rc, r = call("ListQueues", payload)
++        if rc == 0:
++            out(r)
++        sys.exit(rc)
++
++    elif cmd == "get-queue-url":
++        allowed = ["--queue-name"]
++        p = parse_args(rest, allowed)
++        require(p, ["QueueName"])
++        rc, r = call("GetQueueUrl", {"QueueName": p["QueueName"]})
++        if rc == 0:
++            out(r)
++        sys.exit(rc)
++
++    elif cmd == "get-queue-attributes":
++        allowed = ["--queue-url", "--attribute-names"]
++        p = parse_args(rest, allowed)
++        require(p, ["QueueUrl"])
++        payload = {"QueueUrl": p["QueueUrl"]}
++        payload["AttributeNames"] = p.get("AttributeNames", ["All"])
++        rc, r = call("GetQueueAttributes", payload)
++        if rc == 0:
++            out(r)
++        sys.exit(rc)
++
++    elif cmd == "send-message":
++        allowed = ["--queue-url", "--message-body", "--delay-seconds",
++                   "--message-group-id", "--attributes"]
++        p = parse_args(rest, allowed)
++        require(p, ["QueueUrl", "MessageBody"])
++        payload = {"QueueUrl": p["QueueUrl"], "MessageBody": p["MessageBody"]}
++        if "DelaySeconds" in p:
++            payload["DelaySeconds"] = p["DelaySeconds"]
++        if "MessageGroupId" in p:
++            payload["MessageGroupId"] = p["MessageGroupId"]
++        rc, r = call("SendMessage", payload)
++        if rc == 0:
++            out(r)
++        sys.exit(rc)
++
++    elif cmd == "receive-message":
++        allowed = ["--queue-url", "--max-number-of-messages",
++                   "--visibility-timeout", "--wait-time-seconds",
++                   "--attribute-names"]
++        p = parse_args(rest, allowed)
++        require(p, ["QueueUrl"])
++        payload = {"QueueUrl": p["QueueUrl"]}
++        if "MaxNumberOfMessages" in p:
++            payload["MaxNumberOfMessages"] = p["MaxNumberOfMessages"]
++        if "VisibilityTimeout" in p:
++            payload["VisibilityTimeout"] = p["VisibilityTimeout"]
++        if "WaitTimeSeconds" in p:
++            payload["WaitTimeSeconds"] = p["WaitTimeSeconds"]
++        if "AttributeNames" in p:
++            payload["AttributeNames"] = p["AttributeNames"]
++        rc, r = call("ReceiveMessage", payload)
++        if rc == 0:
++            out(r)
++        sys.exit(rc)
++
++    elif cmd == "delete-message":
++        allowed = ["--queue-url", "--receipt-handle"]
++        p = parse_args(rest, allowed)
++        require(p, ["QueueUrl", "ReceiptHandle"])
++        rc, r = call("DeleteMessage",
++                     {"QueueUrl": p["QueueUrl"], "ReceiptHandle": p["ReceiptHandle"]})
++        if rc == 0:
++            sys.stdout.write("")
++        sys.exit(rc)
++
++    elif cmd == "delete-queue":
++        allowed = ["--queue-url"]
++        p = parse_args(rest, allowed)
++        require(p, ["QueueUrl"])
++        rc, r = call("DeleteQueue", {"QueueUrl": p["QueueUrl"]})
++        if rc == 0:
++            sys.stdout.write("")
++        sys.exit(rc)
++
++    else:
++        usage_error("Unknown command: %s" % cmd)
++
++
++if __name__ == "__main__":
++    main()

@@ -1,0 +1,16 @@
+def test_delete_alias_happy_path(cli, kms):
+    key = kms.rpc("CreateKey", {})
+    key_id = key["KeyMetadata"]["KeyId"]
+
+    import uuid
+    alias_name = "alias/test-" + uuid.uuid4().hex[:12]
+    kms.rpc("CreateAlias", {"AliasName": alias_name, "TargetKeyId": key_id})
+
+    aliases_before = kms.rpc("ListAliases", {})["Aliases"]
+    assert any(a["AliasName"] == alias_name for a in aliases_before)
+
+    result = cli("kms", "delete-alias", "--alias-name", alias_name)
+    assert result.returncode == 0
+
+    aliases_after = kms.rpc("ListAliases", {})["Aliases"]
+    assert not any(a["AliasName"] == alias_name for a in aliases_after)

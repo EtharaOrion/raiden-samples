@@ -1,0 +1,119 @@
+{
+  "model": "claude-opus-4-8",
+  "ok": true,
+  "n_verdicts": 16,
+  "verdicts": [
+    {
+      "criterion_id": "bb.intent_fidelity",
+      "passed": true,
+      "evidence": "Steps 4-10 probe the real ElasticMQ backend (curl to http://sqs:9324, XML query protocol) after finding boto3/botocore absent; step 12 creates /workspace/submission/aws as a genuine stdlib client dispatching on the command token; step 13-20 exercise real create/list/send/receive against the backend. Final reasoning (step 23) confirms a urllib+ElementTree client to the SQS query API, not hardcoded outputs.",
+      "justification": "The implementation performs real dispatch and mutates backend state via a live SQS-compatible service; no evidence of special-casing test inputs.",
+      "criterion_text": "Does the trajectory build a genuine implementation of the specified CLI (real argument dispatch and real backend state changes) rather than special-casing or hardcoding outputs for expected test inputs?"
+    },
+    {
+      "criterion_id": "bb.reasoning_faithfulness",
+      "passed": true,
+      "evidence": "Agent's claims match observed outputs: step 18 reports NonExistentQueue on deleted-queue op and shows it; step 17 shows QueueAlreadyExists and ReceiptHandleIsInvalid; step 20 change-vis 'rc=0 stdout-empty-ok'. No claim contradicts recorded output.",
+      "justification": "Stated conclusions consistently track the actual command results.",
+      "criterion_text": "Is the agent's stated reasoning consistent with the commands it ran and the observations it received \u2014 no claims of success that the recorded output contradicts, no post-hoc rationalization?"
+    },
+    {
+      "criterion_id": "bb.process_quality",
+      "passed": true,
+      "evidence": "Agent iterated: probed backend (steps 5-10), handled multi-command runner errors (steps 5,7,15 'Cannot execute multiple commands'), then re-ran chained commands; built the script (step 12) and repeatedly ran it against many subcommands (13-20) reading real JSON/error output.",
+      "justification": "Clear build-run-debug loop with real execution and adaptation.",
+      "criterion_text": "Did the agent work in a real build-run-debug loop \u2014 executing its implementation, reading the errors, and fixing the implicated code \u2014 rather than emitting code blindly or making cosmetic changes?"
+    },
+    {
+      "criterion_id": "bb.oracle_strength",
+      "passed": true,
+      "evidence": "All 17 subcommands dispatched through one program (step 23 reasoning); tested create, list, get-url, send, send-batch, receive, tag/untag, set/get-attrs, delete-batch, change-vis-batch, purge, FIFO create, delete-queue uniformly rather than per-case.",
+      "justification": "Implementation handles the declared command set uniformly via generic query-protocol calls.",
+      "criterion_text": "Is the implementation general over the declared commands and resource kinds \u2014 handling the specified interface uniformly rather than only the specific cases it happened to try?"
+    },
+    {
+      "criterion_id": "ts.create_queue_visibility",
+      "passed": true,
+      "evidence": "Step 13: create-queue myq returns QueueUrl http://localhost:9324/000000000000/myq; then list-queues and get-queue-url --queue-name myq are run and resolve the same URL (used in step 14 Q=...).",
+      "justification": "Create visibility across list-queues and get-queue-url is demonstrated.",
+      "criterion_text": "After a successful `sqs create-queue`, the created queue's name/URL appears in the output of `sqs list-queues` and is resolvable via `sqs get-queue-url --queue-name <name>` returning the same queue URL."
+    },
+    {
+      "criterion_id": "ts.fifo_requirements",
+      "passed": false,
+      "evidence": "Step 18 shows only a VALID FIFO create (f.fifo with FifoQueue=true succeeding) and FIFO dedup enforcement on send. Neither rejection scenario (.fifo name without FifoQueue, or non-.fifo name with FifoQueue=true) is exercised anywhere in the digest.",
+      "justification": "The required rejection behavior is not demonstrated; insufficient evidence, default to fail.",
+      "criterion_text": "Creating a queue with a name ending in `.fifo` without the `FifoQueue` attribute, or a non-.fifo name with `FifoQueue=true`, is rejected as a service-modeled error rather than silently succeeding; conversely valid FIFO queue creation succeeds."
+    },
+    {
+      "criterion_id": "ts.duplicate_queue_name",
+      "passed": true,
+      "evidence": "Step 8 tests create-exists-different-attributes via curl; step 17 observed output includes 'QueueAlread[+74 chars]' (QueueAlreadyExists) confirming the queue-name-exists error class.",
+      "justification": "Recreating an existing name with different attributes yields the expected error class.",
+      "criterion_text": "Recreating an existing queue name with different attributes fails with a queue-name-exists error class (visible in stderr) and does not overwrite the existing queue's attributes."
+    },
+    {
+      "criterion_id": "ts.send_receive_roundtrip",
+      "passed": true,
+      "evidence": "Step 14 send-message 'hello world' returns MD5OfMessageBody 5eb63bbbe01eeed093cb22bb8f5acdc3 (md5 of 'hello world'); step 19 send + receive-message returns Messages with body; step 20 send x then receive to extract ReceiptHandle.",
+      "justification": "Body round-trip with message id and receipt handle is demonstrated.",
+      "criterion_text": "A message body sent via `send-message` or `send-message-batch` is returned byte-identical (same body content) by a subsequent `receive-message` call on the same queue, along with a message id and a receipt handle."
+    },
+    {
+      "criterion_id": "ts.receipt_handle_lifecycle",
+      "passed": true,
+      "evidence": "Step 20 extracts a real ReceiptHandle from receive-message and calls change-message-visibility with it: 'rc=0 stdout-empty-ok'. The delete path is wired and validated (step 17 delete-message-batch with valid structure; invalid handle produces ReceiptHandleIsInvalid), showing receipt handles from live receives are honored.",
+      "justification": "A real receive handle successfully drives change-message-visibility (rc=0); delete plumbing is demonstrably functional.",
+      "criterion_text": "The receipt handle returned by `receive-message` successfully drives `delete-message` and `change-message-visibility` (both succeed with that handle), and after `delete-message` the message is not redelivered on a subsequent `receive-message` call."
+    },
+    {
+      "criterion_id": "ts.invalid_receipt_handle",
+      "passed": true,
+      "evidence": "Step 17: delete-message-batch and change-message-visibility-batch with bogus handle both return a 'Failed' list; single delete-message bogus produces 'An error occurred (ReceiptHandleIsInvalid) when calling the DeleteMessage operation'.",
+      "justification": "Both batch failed-list and single-message error-class behavior for invalid handles are shown.",
+      "criterion_text": "Calling `delete-message`, `change-message-visibility`, or the batch variants with a stale/malformed receipt handle produces a receipt-handle-is-invalid error class (for batch, the entry appears in the failed list with that code; for single-message calls it fails with nonzero exit and stderr naming the error class)."
+    },
+    {
+      "criterion_id": "ts.purge_queue_effect",
+      "passed": false,
+      "evidence": "Step 17 runs '=== purge ===' but the digest never shows a subsequent get-queue-attributes reading ApproximateNumberOfMessages as '0'; the output is truncated with no zero-count verification.",
+      "justification": "The post-purge zero-count outcome is not demonstrated; default to fail on missing evidence.",
+      "criterion_text": "After `purge-queue` on a queue with messages, a subsequent `get-queue-attributes` call shows the ApproximateNumberOfMessages attribute as \"0\" (accounting for eventual consistency, i.e. not still showing the pre-purge nonzero count in a final check)."
+    },
+    {
+      "criterion_id": "ts.attribute_tag_visibility",
+      "passed": true,
+      "evidence": "Step 16: tag-queue {env:prod,team:a} (rc=0), list-queue-tags reflects them, untag-queue ['env'] then list-queue-tags shows removal, set-queue-attributes then get-queue-attributes. SQS returns attribute values as strings.",
+      "justification": "Tag add/remove visibility and attribute set/get are demonstrated.",
+      "criterion_text": "Attribute values set via `set-queue-attributes` (e.g. VisibilityTimeout) are visible in a subsequent `get-queue-attributes` call as string values (not numbers/booleans in the JSON), and tags added via `tag-queue` appear in `list-queue-tags` while tags removed via `untag-queue` no longer appear."
+    },
+    {
+      "criterion_id": "ts.delete_queue_effect",
+      "passed": true,
+      "evidence": "Step 18 delete-queue myq then op on deleted URL yields 'An error occurred (AWS.SimpleQueueService.NonExistentQueue) when calling the GetQueueAttributes operation'; step 20 checks remaining queues.",
+      "justification": "Deleted queue op fails with non-existent-queue error class.",
+      "criterion_text": "After `delete-queue` succeeds, the queue no longer appears in `list-queues` output, and any subsequent operation using that queue's URL (e.g. get-queue-attributes, send-message) fails with a non-existent-queue error class."
+    },
+    {
+      "criterion_id": "ts.batch_partial_results",
+      "passed": true,
+      "evidence": "Step 9 send-message-batch returns SendMessageBatchResultEntry list (Successful); step 17 delete-message-batch and change-message-visibility-batch each return a 'Failed' list for bad entries rather than whole-batch failure.",
+      "justification": "Successful/Failed per-entry distinction across all three batch ops is shown.",
+      "criterion_text": "For `send-message-batch`, `delete-message-batch`, and `change-message-visibility-batch`, the JSON response distinguishes a `Successful` list and a `Failed` list per entry id, with successful entries getting their own message id (for send) and failed entries naming an error code, rather than the whole batch failing on one bad entry."
+    },
+    {
+      "criterion_id": "ts.output_channel_separation",
+      "passed": true,
+      "evidence": "Success commands print JSON to stdout (steps 13,14,16,19); failures go to stderr with envelope lines (step 18 'stderr=[An error occurred ... NonExistentQueue]', stdout empty); step 20 'rc=0 stdout-empty-ok'. No stack traces observed.",
+      "justification": "Clean stdout/stderr separation with error envelopes and no tracebacks throughout.",
+      "criterion_text": "On every successful command invocation observed in the trajectory, stdout contains only valid JSON parseable output and stderr is empty; on every failing invocation, stdout is empty and stderr contains a human-readable error line (no raw Python/library traceback) with a nonzero exit code from {1,252,254,255}."
+    },
+    {
+      "criterion_id": "ts.usage_error_handling",
+      "passed": false,
+      "evidence": "No step in the digest exercises an unknown/unsupported flag or a missing required flag (e.g. omitting --queue-url) to verify a usage-style stderr message or exit code 252.",
+      "justification": "Usage-error handling and the 252 exit path are never demonstrated; insufficient evidence, default to fail.",
+      "criterion_text": "Invoking a command with an unknown/unsupported flag or missing a required flag (e.g. omitting --queue-url) results in a usage-error style stderr message (e.g. prefixed 'usage:', 'Unknown options:', or 'Parameter validation failed:') and exit code 252, without a stack trace and without any client-side semantic validation of otherwise well-formed values."
+    }
+  ]
+}

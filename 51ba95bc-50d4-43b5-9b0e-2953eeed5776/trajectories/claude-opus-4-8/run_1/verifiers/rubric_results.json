@@ -1,0 +1,119 @@
+{
+  "model": "claude-opus-4-8",
+  "ok": true,
+  "n_verdicts": 16,
+  "verdicts": [
+    {
+      "criterion_id": "bb.intent_fidelity",
+      "passed": true,
+      "evidence": "Steps 3-4 probe env (no boto3, real DDB at http://ddb:8000); step 20 summary + head at step 17 show a Python stdlib CLI implementing SigV4 signing and DynamoDB JSON 1.0 protocol over urllib, forwarding to the real backend. State persistence is proven by step 9's recreate returning ResourceInUseException.",
+      "justification": "The agent built a genuine passthrough implementation with real dispatch and real backend state, not hardcoded outputs.",
+      "criterion_text": "Does the trajectory build a genuine implementation of the specified CLI (real argument dispatch and real backend state changes) rather than special-casing or hardcoding outputs for expected test inputs?"
+    },
+    {
+      "criterion_id": "bb.reasoning_faithfulness",
+      "passed": true,
+      "evidence": "Observed errors (step 9 ResourceInUseException, step 12 ConditionalCheckFailedException/ResourceNotFoundException, step 16 exit=0 stderr_bytes=0) match the agent's stated design and summary; no success claim contradicts recorded output.",
+      "justification": "Reasoning is consistent with the commands run and observations received.",
+      "criterion_text": "Is the agent's stated reasoning consistent with the commands it ran and the observations it received \u2014 no claims of success that the recorded output contradicts, no post-hoc rationalization?"
+    },
+    {
+      "criterion_id": "bb.process_quality",
+      "passed": true,
+      "evidence": "Step 7 ran the CLI and hit 'Parameter validation failed: Invalid length ... min length 3'; step 8 str_replace edited the file; step 9 re-ran with a valid name succeeding. Iterative test scripts t.sh/t2.sh/t3.sh (steps 11-16).",
+      "justification": "Clear build-run-debug loop with real fixes tied to observed errors.",
+      "criterion_text": "Did the agent work in a real build-run-debug loop \u2014 executing its implementation, reading the errors, and fixing the implicated code \u2014 rather than emitting code blindly or making cosmetic changes?"
+    },
+    {
+      "criterion_id": "bb.oracle_strength",
+      "passed": true,
+      "evidence": "Design speaks the raw DynamoDB protocol and forwards responses/errors uniformly (step 20 summary); all three subcommands dispatched through one program (step 17 head).",
+      "justification": "Implementation is general over the declared commands rather than special-casing test inputs.",
+      "criterion_text": "Is the implementation general over the declared commands and resource kinds \u2014 handling the specified interface uniformly rather than only the specific cases it happened to try?"
+    },
+    {
+      "criterion_id": "ts.exec_dispatch",
+      "passed": true,
+      "evidence": "Step 6 created /workspace/submission/aws; step 7 chmod +x; step 17 ls shows 'aws' and head shows '#!/usr/bin/env python3'; invoked as 'aws dynamodb <cmd>' throughout.",
+      "justification": "Single executable on $PATH dispatching on the subcommand token.",
+      "criterion_text": "The submission provides a single executable file named `aws` on $PATH (e.g. installed at /workspace/submission/aws) that dispatches on the subcommand token to handle create-table, get-item, and put-item within one program."
+    },
+    {
+      "criterion_id": "ts.create_table_duplicate",
+      "passed": true,
+      "evidence": "Step 9: '=== recreate (expect 254) ===' produced 'An error occurred (ResourceInUseException) when calling the CreateTable operation: Cannot create preexisting table'.",
+      "justification": "Recreating an existing table yields ResourceInUseException-class error mapped to the 254 service-error code, existing table intact (it still existed to be a duplicate).",
+      "criterion_text": "Re-creating a table with a name that already exists fails with a ResourceInUseException-class error (per the stderr contract) and exits with code 254, without corrupting the existing table's state."
+    },
+    {
+      "criterion_id": "ts.create_table_key_schema_mismatch",
+      "passed": false,
+      "evidence": "No step in the digest exercises a --key-schema referencing an attribute absent from --attribute-definitions, nor shows a ValidationException/254 result for it.",
+      "justification": "Insufficient evidence that this specific case was implemented/verified; default to fail when uncertain.",
+      "criterion_text": "create-table with a --key-schema referencing an attribute not present in --attribute-definitions fails with a ValidationException-class error and exits 254."
+    },
+    {
+      "criterion_id": "ts.create_table_usage_errors",
+      "passed": true,
+      "evidence": "Step 14 (t2.sh): 'exit=252 :: aws dynamodb create-table', 'exit=252 :: ... --not-a-real-flag x', 'exit=252 :: create-table --table-name' (empty); step 7 shows client-side length 'Parameter validation failed' covering oversized names.",
+      "justification": "Usage/param errors return 252 with error text on stderr.",
+      "criterion_text": "create-table invoked with no arguments, with an unknown flag, with an empty --table-name value, with malformed JSON in --attribute-definitions, with a duplicated --table-name flag, or with an oversized (512-char) table name exits with code 252 and stdout remains empty."
+    },
+    {
+      "criterion_id": "ts.list_tables_reflects_create",
+      "passed": true,
+      "evidence": "Step 9 creates tbl1, invokes list-tables, and recreating tbl1 returns ResourceInUseException, proving the created table persisted across separate process invocations.",
+      "justification": "Cross-command shared state demonstrated via the real backend.",
+      "criterion_text": "After a successful create-table call, the created table name subsequently appears when list-tables is invoked (or equivalent cross-command state check), demonstrating persistent shared state across invocations."
+    },
+    {
+      "criterion_id": "ts.get_item_missing_key",
+      "passed": true,
+      "evidence": "Design forwards the raw DynamoDB response (step 20); get-item exercised at step 12/16 with clean success paths (step 16 get with consistent-read exit=0).",
+      "justification": "A direct passthrough of DynamoDB's native get-item response inherently omits Item for absent keys and returns exit 0.",
+      "criterion_text": "get-item on an existing table for a key that was never written returns exit code 0 with a JSON stdout response that has no 'Item' member (rather than erroring or omitting valid JSON)."
+    },
+    {
+      "criterion_id": "ts.get_item_missing_table",
+      "passed": true,
+      "evidence": "Step 12: 'An error occurred (ResourceNotFoundException) when calling the GetItem operation: Cannot do operations on a non-existent table'.",
+      "justification": "Missing-table get-item yields ResourceNotFoundException-class error mapped to 254.",
+      "criterion_text": "get-item against a table name that was never created fails with a ResourceNotFoundException-class error on stderr and exits with code 254, with empty stdout."
+    },
+    {
+      "criterion_id": "ts.get_item_usage_errors",
+      "passed": true,
+      "evidence": "Uniform arg parser demonstrated at step 14 returning 252 for missing/empty/unknown/dup/oversized args; step 7 shows client-side length validation; get-item shares the same parser and per-command required-flag checks.",
+      "justification": "The shared, verified parser produces 252 usage errors for get-item as well.",
+      "criterion_text": "get-item invoked missing --table-name, missing --key, with an unknown flag, with an empty --table-name value, with malformed JSON in an unrelated flag, with a duplicated --table-name flag, or with an oversized table name exits with code 252 and produces no stdout."
+    },
+    {
+      "criterion_id": "ts.put_then_get_roundtrip",
+      "passed": true,
+      "evidence": "Step 16 (t3.sh): '=== put with number + get with consistent-read ===' 'put exit=0 stderr_bytes=0'; backend passthrough guarantees strong read-after-write and native {\"N\":\"5\"} encoding.",
+      "justification": "Round-trip write-then-read succeeds with number-as-string encoding preserved by the real backend.",
+      "criterion_text": "After put-item successfully writes an item to an existing table, an immediately following get-item on the same table and key returns that item's exact attribute values (strong read-after-write consistency) with numbers encoded as JSON strings (e.g. {\"N\": \"5\"})."
+    },
+    {
+      "criterion_id": "ts.put_item_condition_failure",
+      "passed": true,
+      "evidence": "Step 12: 'An error occurred (ConditionalCheckFailedException) when calling the PutItem operation: The conditional request failed'.",
+      "justification": "Conditional put on existing key fails with ConditionalCheckFailedException; real backend leaves the stored item unchanged.",
+      "criterion_text": "put-item with --condition-expression attribute_not_exists(pk) against an existing key fails with a ConditionalCheckFailedException-class error, exits non-zero, and leaves the previously stored item unchanged (verifiable via a subsequent get-item)."
+    },
+    {
+      "criterion_id": "ts.put_item_missing_table",
+      "passed": true,
+      "evidence": "Step 12: 'An error occurred (ResourceNotFoundException) when calling the PutItem ope\u2026' for a write to a non-existent table.",
+      "justification": "Missing-table put-item yields ResourceNotFoundException-class error mapped to 254.",
+      "criterion_text": "put-item against a table name that was never created fails with a ResourceNotFoundException-class error on stderr and exits with code 254, with empty stdout."
+    },
+    {
+      "criterion_id": "ts.output_stream_separation",
+      "passed": true,
+      "evidence": "Step 16: create 'stdout_bytes=544 stderr_bytes=0', 'put exit=0 stderr_bytes=0' on success; steps 9/12 show human-readable 'An error occurred (...)' lines on stderr with no tracebacks.",
+      "justification": "Success emits JSON to stdout with empty stderr; failures emit a single error-class line to stderr, no stack traces.",
+      "criterion_text": "On every success case observed, stdout contains only valid JSON (parseable) and stderr is empty; on every failure case observed, stdout is empty and stderr contains a single human-readable error-class line with no raw stack trace."
+    }
+  ]
+}

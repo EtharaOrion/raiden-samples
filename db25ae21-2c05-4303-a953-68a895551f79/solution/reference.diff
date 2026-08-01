@@ -1,0 +1,399 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,393 @@
++import sys
++import os
++import json
++import base64
++import urllib.request
++import urllib.error
++
++USAGE_EXIT = 252
++SERVICE_EXIT = 254
++INTERNAL_EXIT = 255
++
++
++import datetime as _qc_dt
++
++_QC_TS_FIELDS = ['CreationDate', 'DeletionDate', 'LastUpdatedDate', 'NextRotationDate', 'OnDemandRotationStartDate', 'ParametersValidTo', 'RotationDate', 'ValidTo']
++
++
++def _isofix(o):
++    """Serialise AWS timestamp fields as ISO8601 strings, matching aws-cli v2."""
++    if isinstance(o, dict):
++        r = {}
++        for k, v in o.items():
++            if (k in _QC_TS_FIELDS and isinstance(v, (int, float))
++                    and not isinstance(v, bool)):
++                r[k] = _qc_dt.datetime.fromtimestamp(
++                    v, _qc_dt.timezone.utc).isoformat()
++            else:
++                r[k] = _isofix(v)
++        return r
++    if isinstance(o, list):
++        return [_isofix(x) for x in o]
++    return o
++
++def eprint(s):
++    sys.stderr.write(s + "\n")
++
++
++def endpoint():
++    ep = os.environ.get("AWS_ENDPOINT_URL_KMS")
++    if not ep:
++        ep = os.environ.get("AWS_ENDPOINT_URL")
++    if not ep:
++        region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
++        ep = "https://kms.%s.amazonaws.com" % region
++    return ep
++
++
++def call(op, params):
++    url = endpoint()
++    data = json.dumps(params).encode("utf-8")
++    req = urllib.request.Request(url, data=data, method="POST")
++    req.add_header("Content-Type", "application/x-amz-json-1.1")
++    req.add_header("X-Amz-Target", "TrentService." + op)
++    req.add_header(
++        "Authorization",
++        "AWS4-HMAC-SHA256 Credential=dummy/20260101/us-east-1/kms/aws4_request, "
++        "SignedHeaders=host;x-amz-date, Signature=dummy",
++    )
++    req.add_header("Content-Length", str(len(data)))
++    try:
++        resp = urllib.request.urlopen(req)
++        body = resp.read().decode("utf-8")
++        if body:
++            return json.loads(body), None
++        return {}, None
++    except urllib.error.HTTPError as e:
++        body = e.read().decode("utf-8", "replace")
++        return None, body
++    except urllib.error.URLError as e:
++        eprint("Could not connect to the endpoint URL: %s" % str(e))
++        return None, "__CONN__"
++
++
++def handle_err(errbody):
++    if errbody == "__CONN__":
++        sys.exit(INTERNAL_EXIT)
++    eprint(errbody)
++    sys.exit(SERVICE_EXIT)
++
++
++def read_blob(val):
++    if val.startswith("fileb://"):
++        path = val[len("fileb://"):]
++        try:
++            with open(path, "rb") as f:
++                raw = f.read()
++        except OSError:
++            return None
++        return base64.b64encode(raw).decode("ascii")
++    if val.startswith("file://"):
++        path = val[len("file://"):]
++        try:
++            with open(path, "rb") as f:
++                raw = f.read()
++        except OSError:
++            return None
++        return raw.decode("utf-8", "replace").strip()
++    return val
++
++
++def parse_args(argv, spec, required=None):
++    params = {}
++    seen = set()
++    i = 0
++    n = len(argv)
++    while i < n:
++        tok = argv[i]
++        if not tok.startswith("--"):
++            return None, USAGE_EXIT
++        if tok not in spec:
++            return None, USAGE_EXIT
++        jsonkey, kind = spec[tok]
++        if tok in seen:
++            return None, USAGE_EXIT
++        seen.add(tok)
++        if kind == "flag":
++            if jsonkey:
++                params[jsonkey] = True
++            i += 1
++            continue
++        if i + 1 >= n:
++            return None, USAGE_EXIT
++        val = argv[i + 1]
++        i += 2
++        if kind == "ignore":
++            continue
++        if kind == "int":
++            try:
++                iv = int(val)
++            except ValueError:
++                return None, USAGE_EXIT
++            params[jsonkey] = iv
++        else:
++            params[jsonkey] = val
++    if required:
++        for r in required:
++            if r not in params:
++                return None, USAGE_EXIT
++    return params, None
++
++
++def validate_limit(params, key="Limit"):
++    if key in params:
++        v = params[key]
++        if v < 1 or v > 1000:
++            return USAGE_EXIT
++    return None
++
++
++def validate_marker(params, key="Marker"):
++    if key in params:
++        v = params[key]
++        if v == "" or not str(v).strip():
++            return USAGE_EXIT
++    return None
++
++
++def run():
++    if len(sys.argv) < 3:
++        sys.exit(USAGE_EXIT)
++    service = sys.argv[1]
++    if service != "kms":
++        sys.exit(USAGE_EXIT)
++    sub = sys.argv[2]
++    rest = sys.argv[3:]
++
++    if sub == "create-key":
++        spec = {
++            "--policy": ("Policy", "str"),
++            "--description": ("Description", "str"),
++            "--key-usage": ("KeyUsage", "str"),
++            "--customer-master-key-spec": ("KeySpec", "str"),
++            "--key-spec": ("KeySpec", "str"),
++            "--origin": ("Origin", "str"),
++            "--custom-key-store-id": ("CustomKeyStoreId", "str"),
++            "--bypass-policy-lockout-safety-check": (None, "ignore"),
++            "--tags": ("Tags", "str"),
++            "--multi-region": (None, "ignore"),
++            "--xks-key-id": ("XksKeyId", "str"),
++        }
++        params, err = parse_args(rest, spec)
++        if err is not None:
++            eprint("Unknown options or invalid arguments")
++            sys.exit(err)
++        send = {}
++        for k in ("Description", "KeyUsage", "KeySpec"):
++            if k in params:
++                send[k] = params[k]
++        result, errbody = call("CreateKey", send)
++        if errbody is not None:
++            handle_err(errbody)
++        print(json.dumps(_isofix(result), indent=4))
++        sys.exit(0)
++
++    elif sub == "describe-key":
++        spec = {
++            "--key-id": ("KeyId", "str"),
++            "--grant-tokens": ("GrantTokens", "str"),
++        }
++        params, err = parse_args(rest, spec, required=["KeyId"])
++        if err is not None:
++            eprint("Missing required parameter: --key-id (or Unknown options)")
++            sys.exit(err)
++        send = {"KeyId": params["KeyId"]}
++        result, errbody = call("DescribeKey", send)
++        if errbody is not None:
++            handle_err(errbody)
++        print(json.dumps(_isofix(result), indent=4))
++        sys.exit(0)
++
++    elif sub == "list-keys":
++        spec = {
++            "--limit": ("Limit", "int"),
++            "--marker": ("Marker", "str"),
++        }
++        params, err = parse_args(rest, spec)
++        if err is not None:
++            eprint("Unknown options or invalid arguments")
++            sys.exit(err)
++        e = validate_limit(params)
++        if e is not None:
++            eprint('ValidationException: Invalid value for Limit; valid range is 1..1000')
++            sys.exit(e)
++        e = validate_marker(params)
++        if e is not None:
++            eprint('ValidationException: Invalid Marker (InvalidMarker)')
++            sys.exit(e)
++        result, errbody = call("ListKeys", params)
++        if errbody is not None:
++            handle_err(errbody)
++        print(json.dumps(_isofix(result), indent=4))
++        sys.exit(0)
++
++    elif sub == "encrypt":
++        spec = {
++            "--key-id": ("KeyId", "str"),
++            "--plaintext": ("Plaintext", "blob"),
++            "--encryption-context": ("EncryptionContext", "ignore"),
++            "--grant-tokens": ("GrantTokens", "str"),
++            "--encryption-algorithm": ("EncryptionAlgorithm", "str"),
++            "--dry-run": (None, "ignore"),
++        }
++        params, err = parse_args(rest, spec, required=["KeyId", "Plaintext"])
++        if err is not None:
++            eprint("Missing required parameter: --plaintext / --key-id (or Unknown options)")
++            sys.exit(err)
++        pt = read_blob(params["Plaintext"])
++        if pt is None:
++            eprint("Error reading plaintext blob")
++            sys.exit(USAGE_EXIT)
++        send = {"KeyId": params["KeyId"], "Plaintext": pt}
++        if "EncryptionAlgorithm" in params:
++            send["EncryptionAlgorithm"] = params["EncryptionAlgorithm"]
++        result, errbody = call("Encrypt", send)
++        if errbody is not None:
++            handle_err(errbody)
++        print(json.dumps(_isofix(result), indent=4))
++        sys.exit(0)
++
++    elif sub == "decrypt":
++        spec = {
++            "--ciphertext-blob": ("CiphertextBlob", "blob"),
++            "--encryption-context": ("EncryptionContext", "ignore"),
++            "--grant-tokens": ("GrantTokens", "str"),
++            "--key-id": ("KeyId", "str"),
++            "--encryption-algorithm": ("EncryptionAlgorithm", "str"),
++            "--recipient": ("Recipient", "ignore"),
++            "--dry-run": (None, "ignore"),
++        }
++        params, err = parse_args(rest, spec, required=["CiphertextBlob"])
++        if err is not None:
++            eprint("Missing required parameter: --ciphertext-blob (or Unknown options)")
++            sys.exit(err)
++        cb = read_blob(params["CiphertextBlob"])
++        if cb is None:
++            eprint("Error reading ciphertext blob")
++            sys.exit(USAGE_EXIT)
++        send = {"CiphertextBlob": cb}
++        if "KeyId" in params:
++            send["KeyId"] = params["KeyId"]
++        if "EncryptionAlgorithm" in params:
++            send["EncryptionAlgorithm"] = params["EncryptionAlgorithm"]
++        result, errbody = call("Decrypt", send)
++        if errbody is not None:
++            handle_err(errbody)
++        print(json.dumps(_isofix(result), indent=4))
++        sys.exit(0)
++
++    elif sub == "generate-data-key":
++        spec = {
++            "--key-id": ("KeyId", "str"),
++            "--encryption-context": ("EncryptionContext", "ignore"),
++            "--number-of-bytes": ("NumberOfBytes", "int"),
++            "--key-spec": ("KeySpec", "str"),
++            "--grant-tokens": ("GrantTokens", "str"),
++            "--recipient": ("Recipient", "ignore"),
++            "--dry-run": (None, "ignore"),
++        }
++        params, err = parse_args(rest, spec, required=["KeyId"])
++        if err is not None:
++            eprint("Missing required parameter: --key-id (or Unknown options)")
++            sys.exit(err)
++        send = {"KeyId": params["KeyId"]}
++        if "NumberOfBytes" in params:
++            send["NumberOfBytes"] = params["NumberOfBytes"]
++        if "KeySpec" in params:
++            send["KeySpec"] = params["KeySpec"]
++        result, errbody = call("GenerateDataKey", send)
++        if errbody is not None:
++            handle_err(errbody)
++        print(json.dumps(_isofix(result), indent=4))
++        sys.exit(0)
++
++    elif sub == "create-alias":
++        spec = {
++            "--alias-name": ("AliasName", "str"),
++            "--target-key-id": ("TargetKeyId", "str"),
++        }
++        params, err = parse_args(rest, spec, required=["AliasName", "TargetKeyId"])
++        if err is not None:
++            eprint("Missing required parameter: --alias-name / --target-key-id (or Unknown options)")
++            sys.exit(err)
++        an = params["AliasName"]
++        send = {"AliasName": an, "TargetKeyId": params["TargetKeyId"]}
++        result, errbody = call("CreateAlias", send)
++        if errbody is not None:
++            handle_err(errbody)
++        sys.exit(0)
++
++    elif sub == "list-aliases":
++        spec = {
++            "--key-id": ("KeyId", "str"),
++            "--limit": ("Limit", "int"),
++            "--marker": ("Marker", "str"),
++        }
++        params, err = parse_args(rest, spec)
++        if err is not None:
++            eprint("Unknown options or invalid arguments")
++            sys.exit(err)
++        e = validate_limit(params)
++        if e is not None:
++            eprint('ValidationException: Invalid value for Limit; valid range is 1..1000')
++            sys.exit(e)
++        e = validate_marker(params)
++        if e is not None:
++            eprint('ValidationException: Invalid Marker (InvalidMarker)')
++            sys.exit(e)
++        result, errbody = call("ListAliases", params)
++        if errbody is not None:
++            handle_err(errbody)
++        print(json.dumps(_isofix(result), indent=4))
++        sys.exit(0)
++
++    elif sub == "schedule-key-deletion":
++        spec = {
++            "--key-id": ("KeyId", "str"),
++            "--pending-window-in-days": ("PendingWindowInDays", "int"),
++        }
++        params, err = parse_args(rest, spec, required=["KeyId"])
++        if err is not None:
++            eprint("Missing required parameter: --key-id (or Unknown options)")
++            sys.exit(err)
++        send = {"KeyId": params["KeyId"]}
++        if "PendingWindowInDays" in params:
++            send["PendingWindowInDays"] = params["PendingWindowInDays"]
++        result, errbody = call("ScheduleKeyDeletion", send)
++        if errbody is not None:
++            handle_err(errbody)
++        print(json.dumps(_isofix(result), indent=4))
++        sys.exit(0)
++
++    elif sub in ("enable-key", "disable-key"):
++        op = "EnableKey" if sub == "enable-key" else "DisableKey"
++        spec = {
++            "--key-id": ("KeyId", "str"),
++        }
++        params, err = parse_args(rest, spec, required=["KeyId"])
++        if err is not None:
++            eprint("Missing required parameter: --key-id (or Unknown options)")
++            sys.exit(err)
++        send = {"KeyId": params["KeyId"]}
++        result, errbody = call(op, send)
++        if errbody is not None:
++            handle_err(errbody)
++        sys.exit(0)
++
++    else:
++        eprint("Unknown command: %s" % sub)
++        sys.exit(USAGE_EXIT)
++
++
++if __name__ == "__main__":
++    run()

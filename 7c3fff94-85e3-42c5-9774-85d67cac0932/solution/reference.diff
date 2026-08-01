@@ -1,0 +1,583 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,577 @@
++import sys
++import os
++import json
++import urllib.request
++import urllib.error
++
++ENDPOINT = os.environ.get("AWS_ENDPOINT_URL_KMS") or os.environ.get("AWS_ENDPOINT_URL") or "http://localhost:4566"
++
++
++import datetime as _qc_dt
++
++_QC_TS_FIELDS = ['CreationDate', 'DeletionDate', 'LastUpdatedDate', 'NextRotationDate', 'OnDemandRotationStartDate', 'ParametersValidTo', 'RotationDate', 'ValidTo']
++
++
++def _list_keys_all(params):
++    """aws-cli auto-paginates ListKeys when no explicit paging args are given."""
++    keys = []
++    marker = None
++    while True:
++        q = dict(params)
++        if marker:
++            q["Marker"] = marker
++        code, raw = call("ListKeys", q)
++        if code != 0 or raw is None:
++            return code, raw
++        try:
++            page = json.loads(raw)
++        except Exception:
++            return code, raw
++        keys.extend(page.get("Keys") or [])
++        if page.get("Truncated") and page.get("NextMarker"):
++            marker = page["NextMarker"]
++            continue
++        merged = dict(page)
++        merged["Keys"] = keys
++        merged["Truncated"] = False
++        merged.pop("NextMarker", None)
++        return 0, json.dumps(merged)
++
++
++def _isofix(o):
++    """Serialise AWS timestamp fields as ISO8601 strings, matching aws-cli v2."""
++    if isinstance(o, dict):
++        r = {}
++        for k, v in o.items():
++            if (k in _QC_TS_FIELDS and isinstance(v, (int, float))
++                    and not isinstance(v, bool)):
++                r[k] = _qc_dt.datetime.fromtimestamp(
++                    v, _qc_dt.timezone.utc).isoformat()
++            else:
++                r[k] = _isofix(v)
++        return r
++    if isinstance(o, list):
++        return [_isofix(x) for x in o]
++    return o
++
++def eprint(s):
++    sys.stderr.write(s + ("\n" if not s.endswith("\n") else ""))
++
++
++def usage_error(msg):
++    eprint(msg)
++    sys.exit(252)
++
++
++def call(op, body):
++    data = json.dumps(body).encode("utf-8")
++    req = urllib.request.Request(ENDPOINT, data=data, method="POST")
++    req.add_header("X-Amz-Target", "TrentService." + op)
++    req.add_header("Content-Type", "application/x-amz-json-1.1")
++    req.add_header("Authorization",
++                   "AWS4-HMAC-SHA256 Credential=dummy/20260101/us-east-1/kms/aws4_request, "
++                   "SignedHeaders=host;x-amz-date, Signature=dummy")
++    req.add_header("X-Amz-Date", "20260101T000000Z")
++    try:
++        resp = urllib.request.urlopen(req)
++        return 0, resp.read().decode("utf-8")
++    except urllib.error.HTTPError as e:
++        return 254, e.read().decode("utf-8")
++    except Exception as e:
++        eprint(str(e))
++        return 255, None
++import sys
++import os
++import json
++import urllib.request
++import urllib.error
++
++ENDPOINT = os.environ.get("AWS_ENDPOINT_URL_KMS") or os.environ.get("AWS_ENDPOINT_URL") or "http://localhost:4566"
++
++
++def eprint(s):
++    sys.stderr.write(s + ("\n" if not s.endswith("\n") else ""))
++
++
++def usage_error(msg):
++    eprint(msg)
++    sys.exit(252)
++
++
++def call(op, body):
++    data = json.dumps(body).encode("utf-8")
++    req = urllib.request.Request(ENDPOINT, data=data, method="POST")
++    req.add_header("X-Amz-Target", "TrentService." + op)
++    req.add_header("Content-Type", "application/x-amz-json-1.1")
++    req.add_header("Authorization",
++                   "AWS4-HMAC-SHA256 Credential=dummy/20260101/us-east-1/kms/aws4_request, "
++                   "SignedHeaders=host;x-amz-date, Signature=dummy")
++    req.add_header("X-Amz-Date", "20260101T000000Z")
++    try:
++        resp = urllib.request.urlopen(req)
++        return 0, resp.read().decode("utf-8")
++    except urllib.error.HTTPError as e:
++        return 254, e.read().decode("utf-8")
++    except Exception as e:
++        eprint(str(e))
++        return 255, None
++
++
++# Flags recognized/consumed but not sent (aws-cli global/ignored options that take a value)
++GLOBAL_IGNORE_VALUE = {
++    "--grant-tokens", "--encryption-context", "--recipient", "--output",
++    "--region", "--profile", "--endpoint-url", "--cli-connect-timeout",
++    "--cli-read-timeout", "--query", "--color", "--ca-bundle",
++}
++GLOBAL_IGNORE_NOVALUE = {
++    "--no-paginate", "--no-cli-pager", "--no-verify-ssl",
++}
++
++
++def read_blob(val):
++    # Handle fileb:// and file:// by reading and base64-encoding contents.
++    import base64
++    if val.startswith("fileb://"):
++        path = val[len("fileb://"):]
++        with open(path, "rb") as f:
++            return base64.b64encode(f.read()).decode("ascii")
++    if val.startswith("file://"):
++        path = val[len("file://"):]
++        with open(path, "rb") as f:
++            return base64.b64encode(f.read()).decode("ascii")
++    return val
++
++
++def read_str_arg(val):
++    if val.startswith("file://"):
++        path = val[len("file://"):]
++        with open(path, "r") as f:
++            return f.read()
++    return val
++
++
++def parse_tags(val):
++    val = read_str_arg(val).strip()
++    if val.startswith("["):
++        return json.loads(val)
++    tags = []
++    for chunk in val.split():
++        d = {}
++        for part in chunk.split(","):
++            if "=" in part:
++                k, v = part.split("=", 1)
++                d[k] = v
++        if d:
++            tags.append(d)
++    return tags
++
++
++def parse_list(val):
++    val = read_str_arg(val).strip()
++    if val.startswith("["):
++        return json.loads(val)
++    return val.split(",")
++
++
++def parse_cmd(argv, spec, required):
++    """spec: flag -> (jsonkey, kind). kind: str,int,blob,tags,tagkeys.
++       Returns params dict. Handles unknown flags, empty-value validation, required flags."""
++    result = {}
++    provided = set()
++    i = 0
++    while i < len(argv):
++        a = argv[i]
++        if not a.startswith("--"):
++            usage_error("Unknown options: %s" % a)
++        if a in spec:
++            jsonkey, kind = spec[a]
++            if i + 1 >= len(argv):
++                usage_error("argument %s: expected one argument" % a)
++            val = argv[i + 1]
++            provided.add(a)
++            try:
++                if kind == "int":
++                    try:
++                        result[jsonkey] = int(val)
++                    except ValueError:
++                        usage_error("Parameter validation failed: Invalid value for %s" % a)
++                elif kind == "blob":
++                    result[jsonkey] = read_blob(val)
++                elif kind == "tags":
++                    result[jsonkey] = parse_tags(val)
++                elif kind == "tagkeys":
++                    result[jsonkey] = parse_list(val)
++                elif kind == "str":
++                    result[jsonkey] = read_str_arg(val)
++                else:
++                    result[jsonkey] = val
++            except (OSError, ValueError) as e:
++                eprint(str(e))
++                sys.exit(255)
++            i += 2
++        elif a in GLOBAL_IGNORE_VALUE:
++            i += 2
++        elif a in GLOBAL_IGNORE_NOVALUE:
++            i += 1
++        else:
++            usage_error("Unknown options: %s" % a)
++    for r in required:
++        if r not in provided:
++            usage_error("the following arguments are required: %s" % r)
++    return result, provided
++
++
++# Validation for length-constrained string params (empty -> error)
++def validate_nonempty(result, flag, jsonkey, kind="length"):
++    """kind: 'length' -> 'Invalid length', 'param' -> 'Parameter validation failed'"""
++    pass
++
++
++def emit(code, raw):
++    if code == 0:
++        if raw is not None and raw.strip():
++            try:
++                obj = json.loads(raw)
++                print(json.dumps(_isofix(obj), indent=4))
++            except Exception:
++                pass
++        sys.exit(0)
++    else:
++        if raw is not None:
++            eprint(raw)
++        sys.exit(code)
++
++
++def emit_empty(code, raw):
++    if code == 0:
++        sys.exit(0)
++    else:
++        if raw is not None:
++            eprint(raw)
++        sys.exit(code)
++
++
++def check_empty(provided, result, flag, jsonkey, msg):
++    if flag in provided and result.get(jsonkey, None) == "":
++        usage_error(msg)
++
++
++def main():
++    if len(sys.argv) < 3:
++        usage_error("missing subcommand")
++    sub = sys.argv[2]
++    argv = sys.argv[3:]
++
++    INVALID_LENGTH_KEYID = "Invalid length for parameter KeyId, value: 0, valid min length: 1"
++    PARAM_VALIDATION = "Parameter validation failed:\n" + "Invalid length for parameter KeyId, value: 0, valid min length: 1"
++
++    if sub == "create-key":
++        spec = {
++            "--description": ("Description", "str"),
++            "--key-usage": ("KeyUsage", "str"),
++            "--key-spec": ("KeySpec", "str"),
++            "--customer-master-key-spec": ("KeySpec", "str"),
++            "--policy": ("Policy", "str"),
++            "--tags": ("Tags", "tags"),
++            "--custom-key-store-id": ("CustomKeyStoreId", "str"),
++            "--xks-key-id": ("XksKeyId", "str"),
++            "--origin": ("Origin", "str"),
++        }
++        # multi-region / bypass are no-value flags
++        argv2 = [x for x in argv]
++        # handle no-value flags manually
++        filtered = []
++        multi = False
++        bypass = False
++        j = 0
++        while j < len(argv2):
++            if argv2[j] == "--multi-region":
++                multi = True
++                j += 1
++            elif argv2[j] == "--bypass-policy-lockout-safety-check":
++                bypass = True
++                j += 1
++            else:
++                filtered.append(argv2[j])
++                j += 1
++        result, provided = parse_cmd(filtered, spec, [])
++        if "--policy" in provided and result.get("Policy", None) == "":
++            usage_error("Invalid length for parameter Policy, value: 0, valid min length: 1")
++        if "--custom-key-store-id" in provided and result.get("CustomKeyStoreId", None) == "":
++            usage_error("Parameter validation failed:\nInvalid length for parameter CustomKeyStoreId, value: 0, valid min length: 1")
++        if "--xks-key-id" in provided and result.get("XksKeyId", None) == "":
++            usage_error("Invalid length for parameter XksKeyId, value: 0, valid min length: 1")
++        if multi:
++            result["MultiRegion"] = True
++        if bypass:
++            result["BypassPolicyLockoutSafetyCheck"] = True
++        emit(*call("CreateKey", result))
++
++    elif sub == "describe-key":
++        spec = {"--key-id": ("KeyId", "str")}
++        result, provided = parse_cmd(argv, spec, ["--key-id"])
++        if result.get("KeyId", None) == "":
++            usage_error(INVALID_LENGTH_KEYID)
++        emit(*call("DescribeKey", result))
++
++    elif sub == "list-keys":
++        spec = {"--limit": ("Limit", "int"), "--marker": ("Marker", "str")}
++        result, provided = parse_cmd(argv, spec, [])
++        if "--marker" in provided and result.get("Marker", None) == "":
++            usage_error("Parameter validation failed:\nInvalid length for parameter Marker, value: 0, valid min length: 1")
++        if "Limit" in result and (result["Limit"] < 1 or result["Limit"] > 1000):
++            usage_error("Parameter validation failed:\nInvalid value for parameter Limit")
++        if "--limit" in provided or "--marker" in provided:
++            emit(*call("ListKeys", result))
++        else:
++            emit(*_list_keys_all(result))
++
++    elif sub == "update-key-description":
++        spec = {"--key-id": ("KeyId", "str"), "--description": ("Description", "str")}
++        result, provided = parse_cmd(argv, spec, ["--key-id", "--description"])
++        if result.get("KeyId", None) == "":
++            usage_error(INVALID_LENGTH_KEYID)
++        emit_empty(*call("UpdateKeyDescription", result))
++
++    elif sub == "schedule-key-deletion":
++        spec = {"--key-id": ("KeyId", "str"),
++                "--pending-window-in-days": ("PendingWindowInDays", "int")}
++        result, provided = parse_cmd(argv, spec, ["--key-id"])
++        if result.get("KeyId", None) == "":
++            usage_error("Parameter validation failed:\nInvalid length for parameter KeyId, value: 0, valid min length: 1")
++        emit(*call("ScheduleKeyDeletion", result))
++
++    elif sub == "cancel-key-deletion":
++        spec = {"--key-id": ("KeyId", "str")}
++        result, provided = parse_cmd(argv, spec, ["--key-id"])
++        if result.get("KeyId", None) == "":
++            usage_error(INVALID_LENGTH_KEYID)
++        emit(*call("CancelKeyDeletion", result))
++
++    elif sub == "enable-key":
++        spec = {"--key-id": ("KeyId", "str")}
++        result, provided = parse_cmd(argv, spec, ["--key-id"])
++        if result.get("KeyId", None) == "":
++            usage_error(INVALID_LENGTH_KEYID)
++        emit_empty(*call("EnableKey", result))
++
++    elif sub == "disable-key":
++        spec = {"--key-id": ("KeyId", "str")}
++        result, provided = parse_cmd(argv, spec, ["--key-id"])
++        if result.get("KeyId", None) == "":
++            usage_error("Parameter validation failed:\nInvalid length for parameter KeyId, value: 0, valid min length: 1")
++        emit_empty(*call("DisableKey", result))
++
++    elif sub == "encrypt":
++        spec = {"--key-id": ("KeyId", "str"),
++                "--plaintext": ("Plaintext", "blob"),
++                "--encryption-algorithm": ("EncryptionAlgorithm", "str"),
++                "--encryption-context": ("EncryptionContext", "str")}
++        result, provided = parse_cmd(argv, spec, ["--key-id", "--plaintext"])
++        if result.get("KeyId", None) == "":
++            usage_error("Parameter validation failed:\nInvalid length for parameter KeyId, value: 0, valid min length: 1")
++        result.pop("EncryptionContext", None)
++        emit(*call("Encrypt", result))
++
++    elif sub == "decrypt":
++        spec = {"--ciphertext-blob": ("CiphertextBlob", "blob"),
++                "--key-id": ("KeyId", "str"),
++                "--encryption-algorithm": ("EncryptionAlgorithm", "str")}
++        result, provided = parse_cmd(argv, spec, ["--ciphertext-blob"])
++        emit(*call("Decrypt", result))
++
++    elif sub == "re-encrypt":
++        spec = {"--ciphertext-blob": ("CiphertextBlob", "blob"),
++                "--destination-key-id": ("DestinationKeyId", "str"),
++                "--source-key-id": ("SourceKeyId", "str"),
++                "--source-encryption-algorithm": ("SourceEncryptionAlgorithm", "str"),
++                "--destination-encryption-algorithm": ("DestinationEncryptionAlgorithm", "str")}
++        result, provided = parse_cmd(argv, spec, ["--ciphertext-blob", "--destination-key-id"])
++        emit(*call("ReEncrypt", result))
++
++    elif sub == "generate-data-key":
++        spec = {"--key-id": ("KeyId", "str"),
++                "--key-spec": ("KeySpec", "str"),
++                "--number-of-bytes": ("NumberOfBytes", "int")}
++        result, provided = parse_cmd(argv, spec, ["--key-id"])
++        if result.get("KeyId", None) == "":
++            usage_error("Parameter validation failed:\nInvalid length for parameter KeyId, value: 0, valid min length: 1")
++        emit(*call("GenerateDataKey", result))
++
++    elif sub == "generate-data-key-without-plaintext":
++        spec = {"--key-id": ("KeyId", "str"),
++                "--key-spec": ("KeySpec", "str"),
++                "--number-of-bytes": ("NumberOfBytes", "int")}
++        result, provided = parse_cmd(argv, spec, ["--key-id"])
++        if result.get("KeyId", None) == "":
++            usage_error(INVALID_LENGTH_KEYID)
++        emit(*call("GenerateDataKeyWithoutPlaintext", result))
++
++    elif sub == "generate-random":
++        spec = {"--number-of-bytes": ("NumberOfBytes", "int"),
++                "--custom-key-store-id": ("CustomKeyStoreId", "str")}
++        result, provided = parse_cmd(argv, spec, [])
++        if "--custom-key-store-id" in provided and result.get("CustomKeyStoreId", None) == "":
++            usage_error("Parameter validation failed:\nInvalid length for parameter CustomKeyStoreId, value: 0, valid min length: 1")
++        if "NumberOfBytes" in result and (result["NumberOfBytes"] < 1 or result["NumberOfBytes"] > 1024):
++            usage_error("Parameter validation failed:\nInvalid value for parameter NumberOfBytes")
++        emit(*call("GenerateRandom", result))
++
++    elif sub == "create-alias":
++        spec = {"--alias-name": ("AliasName", "str"),
++                "--target-key-id": ("TargetKeyId", "str")}
++        result, provided = parse_cmd(argv, spec, ["--alias-name", "--target-key-id"])
++        if result.get("AliasName", None) == "":
++            usage_error("Invalid length for parameter AliasName, value: 0, valid min length: 1")
++        emit_empty(*call("CreateAlias", result))
++
++    elif sub == "update-alias":
++        spec = {"--alias-name": ("AliasName", "str"),
++                "--target-key-id": ("TargetKeyId", "str")}
++        result, provided = parse_cmd(argv, spec, ["--alias-name", "--target-key-id"])
++        if result.get("AliasName", None) == "":
++            usage_error("Invalid length for parameter AliasName, value: 0, valid min length: 1")
++        emit_empty(*call("UpdateAlias", result))
++
++    elif sub == "delete-alias":
++        spec = {"--alias-name": ("AliasName", "str")}
++        result, provided = parse_cmd(argv, spec, ["--alias-name"])
++        if result.get("AliasName", None) == "":
++            usage_error("Parameter validation failed:\nInvalid length for parameter AliasName, value: 0, valid min length: 1")
++        emit_empty(*call("DeleteAlias", result))
++
++    elif sub == "list-aliases":
++        spec = {"--key-id": ("KeyId", "str"),
++                "--limit": ("Limit", "int"),
++                "--marker": ("Marker", "str")}
++        result, provided = parse_cmd(argv, spec, [])
++        if "--key-id" in provided and result.get("KeyId", None) == "":
++            usage_error("Parameter validation failed:\nInvalid length for parameter KeyId, value: 0, valid min length: 1")
++        if "--marker" in provided and result.get("Marker", None) == "":
++            usage_error("Parameter validation failed:\nInvalid length for parameter Marker, value: 0, valid min length: 1")
++        if "Limit" in result and (result["Limit"] < 1 or result["Limit"] > 1000):
++            usage_error("Parameter validation failed:\nInvalid value for parameter Limit")
++        emit(*call("ListAliases", result))
++
++    elif sub == "enable-key-rotation":
++        spec = {"--key-id": ("KeyId", "str"),
++                "--rotation-period-in-days": ("RotationPeriodInDays", "int")}
++        result, provided = parse_cmd(argv, spec, ["--key-id"])
++        if result.get("KeyId", None) == "":
++            usage_error(INVALID_LENGTH_KEYID)
++        emit_empty(*call("EnableKeyRotation", result))
++
++    elif sub == "disable-key-rotation":
++        spec = {"--key-id": ("KeyId", "str")}
++        result, provided = parse_cmd(argv, spec, ["--key-id"])
++        if result.get("KeyId", None) == "":
++            usage_error("Parameter validation failed:\nInvalid length for parameter KeyId, value: 0, valid min length: 1")
++        emit_empty(*call("DisableKeyRotation", result))
++
++    elif sub == "get-key-rotation-status":
++        spec = {"--key-id": ("KeyId", "str")}
++        result, provided = parse_cmd(argv, spec, ["--key-id"])
++        if result.get("KeyId", None) == "":
++            usage_error(INVALID_LENGTH_KEYID)
++        emit(*call("GetKeyRotationStatus", result))
++
++    elif sub == "tag-resource":
++        spec = {"--key-id": ("KeyId", "str"),
++                "--tags": ("Tags", "tags")}
++        result, provided = parse_cmd(argv, spec, ["--key-id", "--tags"])
++        if result.get("KeyId", None) == "":
++            usage_error(INVALID_LENGTH_KEYID)
++        emit_empty(*call("TagResource", result))
++
++    elif sub == "untag-resource":
++        spec = {"--key-id": ("KeyId", "str"),
++                "--tag-keys": ("TagKeys", "tagkeys")}
++        result, provided = parse_cmd(argv, spec, ["--key-id", "--tag-keys"])
++        if result.get("KeyId", None) == "":
++            usage_error("Parameter validation failed:\nInvalid length for parameter KeyId, value: 0, valid min length: 1")
++        emit_empty(*call("UntagResource", result))
++
++    elif sub == "list-resource-tags":
++        spec = {"--key-id": ("KeyId", "str"),
++                "--limit": ("Limit", "int"),
++                "--marker": ("Marker", "str")}
++        result, provided = parse_cmd(argv, spec, ["--key-id"])
++        if result.get("KeyId", None) == "":
++            usage_error("Parameter validation failed:\nInvalid length for parameter KeyId, value: 0, valid min length: 1")
++        emit(*call("ListResourceTags", result))
++
++    elif sub == "get-key-policy":
++        spec = {"--key-id": ("KeyId", "str"),
++                "--policy-name": ("PolicyName", "str")}
++        result, provided = parse_cmd(argv, spec, ["--key-id"])
++        if result.get("KeyId", None) == "":
++            usage_error("Invalid length for parameter KeyId, value: 0, valid min length: 1")
++        result["PolicyName"] = "default"
++        emit(*call("GetKeyPolicy", result))
++
++    elif sub == "put-key-policy":
++        spec = {"--key-id": ("KeyId", "str"),
++                "--policy": ("Policy", "str"),
++                "--policy-name": ("PolicyName", "str")}
++        result, provided = parse_cmd(argv, spec, ["--key-id", "--policy"])
++        if result.get("KeyId", None) == "":
++            usage_error("Parameter validation failed:\nInvalid length for parameter KeyId, value: 0, valid min length: 1")
++        result["PolicyName"] = "default"
++        emit_empty(*call("PutKeyPolicy", result))
++
++    elif sub == "sign":
++        spec = {"--key-id": ("KeyId", "str"),
++                "--message": ("Message", "blob"),
++                "--message-type": ("MessageType", "str"),
++                "--signing-algorithm": ("SigningAlgorithm", "str")}
++        result, provided = parse_cmd(argv, spec, ["--key-id", "--message", "--signing-algorithm"])
++        emit(*call("Sign", result))
++
++    elif sub == "verify":
++        spec = {"--key-id": ("KeyId", "str"),
++                "--message": ("Message", "blob"),
++                "--message-type": ("MessageType", "str"),
++                "--signature": ("Signature", "blob"),
++                "--signing-algorithm": ("SigningAlgorithm", "str")}
++        result, provided = parse_cmd(argv, spec, ["--key-id", "--message", "--signature", "--signing-algorithm"])
++        code, raw = call("Verify", result)
++        if code == 0:
++            try:
++                obj = json.loads(raw)
++            except Exception:
++                obj = {}
++            print(json.dumps(_isofix(obj), indent=4))
++            sys.exit(0)
++        else:
++            if raw is not None:
++                eprint(raw)
++            sys.exit(code)
++
++    elif sub == "get-public-key":
++        spec = {"--key-id": ("KeyId", "str")}
++        result, provided = parse_cmd(argv, spec, ["--key-id"])
++        if result.get("KeyId", None) == "":
++            usage_error(INVALID_LENGTH_KEYID)
++        emit(*call("GetPublicKey", result))
++
++    elif sub == "generate-mac":
++        spec = {"--key-id": ("KeyId", "str"),
++                "--message": ("Message", "blob"),
++                "--mac-algorithm": ("MacAlgorithm", "str")}
++        result, provided = parse_cmd(argv, spec, ["--key-id", "--message", "--mac-algorithm"])
++        emit(*call("GenerateMac", result))
++
++    elif sub == "verify-mac":
++        spec = {"--key-id": ("KeyId", "str"),
++                "--message": ("Message", "blob"),
++                "--mac": ("Mac", "blob"),
++                "--mac-algorithm": ("MacAlgorithm", "str")}
++        result, provided = parse_cmd(argv, spec, ["--key-id", "--message", "--mac", "--mac-algorithm"])
++        emit(*call("VerifyMac", result))
++
++    else:
++        usage_error("Unknown subcommand: %s" % sub)
++
++
++if __name__ == "__main__":
++    main()

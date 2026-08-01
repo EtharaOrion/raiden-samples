@@ -1,0 +1,119 @@
+{
+  "model": "claude-opus-4-8",
+  "ok": true,
+  "n_verdicts": 16,
+  "verdicts": [
+    {
+      "criterion_id": "bb.intent_fidelity",
+      "passed": true,
+      "evidence": "Steps 11-12 build a Python stdlib executable that signs requests with SigV4 and calls the real DynamoDB endpoint (call_dynamodb, e.g. step 39/42 invoke ListTables/DeleteTable). Errors like ResourceInUseException/ConditionalCheckFailedException in step 19 come from a real backend, not hardcoded outputs.",
+      "justification": "Real dispatch + real backend state, no special-casing of test inputs.",
+      "criterion_text": "Does the trajectory build a genuine implementation of the specified CLI (real argument dispatch and real backend state changes) rather than special-casing or hardcoding outputs for expected test inputs?"
+    },
+    {
+      "criterion_id": "bb.reasoning_faithfulness",
+      "passed": true,
+      "evidence": "Thinking steps 21/23/28 hypothesize causes of harness failures (short fixture name below min length, /tmp cleanup, sequential-timeout hang) and then act on them (edits at 30/31/36). No claim of success contradicts observed output; the agent kept debugging rather than declaring false victory.",
+      "justification": "Stated reasoning tracks the commands and observations.",
+      "criterion_text": "Is the agent's stated reasoning consistent with the commands it ran and the observations it received \u2014 no claims of success that the recorded output contradicts, no post-hoc rationalization?"
+    },
+    {
+      "criterion_id": "bb.process_quality",
+      "passed": true,
+      "evidence": "Iterative loop: compile (step 17,32,35), run against service, observe errors (step 19 modeled errors, step 20/22 exit-code checks), then targeted str_replace fixes (step 30 JSON handling, 31 dispatch, 36 options).",
+      "justification": "Genuine build-run-debug cycle with fixes to implicated code.",
+      "criterion_text": "Did the agent work in a real build-run-debug loop \u2014 executing its implementation, reading the errors, and fixing the implicated code \u2014 rather than emitting code blindly or making cosmetic changes?"
+    },
+    {
+      "criterion_id": "bb.oracle_strength",
+      "passed": true,
+      "evidence": "Uses generic option tables (PUT_OPTIONS, step 36 shows OP map with required sets {\"TableName\",\"Item\"}), generic flag parsing and AttributeValue conversion; step 37 exercises warm-throughput parsing generically rather than per test case.",
+      "justification": "Uniform handling across the declared commands/flags.",
+      "criterion_text": "Is the implementation general over the declared commands and resource kinds \u2014 handling the specified interface uniformly rather than only the specific cases it happened to try?"
+    },
+    {
+      "criterion_id": "ts.dispatch",
+      "passed": true,
+      "evidence": "Single file /workspace/submission/aws (step 12) invoked as `aws dynamodb <command>` for create-table/get-item/list-tables/put-item across steps 17,19,32,41; step 31 edit dispatches on command token.",
+      "justification": "One executable dispatches all four subcommands.",
+      "criterion_text": "A single executable named `aws` on $PATH dispatches on the subcommand token to handle create-table, get-item, list-tables, and put-item."
+    },
+    {
+      "criterion_id": "ts.create_table_state",
+      "passed": true,
+      "evidence": "Tables created in step 19/harness later appear in list-tables output (step 41: {\"TableNames\":[...oh-cli-test...,oh-cli-provisioned...]}).",
+      "justification": "Created tables show up in list-tables.",
+      "criterion_text": "After a successful create-table call, the table name subsequently appears in the TableNames list returned by list-tables."
+    },
+    {
+      "criterion_id": "ts.create_table_duplicate",
+      "passed": true,
+      "evidence": "Step 19 observed: 'An error occurred (ResourceInUseException) when calling the CreateTable operation: Cannot create preexisting table'.",
+      "justification": "Duplicate create surfaces ResourceInUseException, non-zero.",
+      "criterion_text": "Re-creating a table with a name that already exists fails (non-zero exit) and the error identifies ResourceInUseException as the failure class, either via the AWS error envelope or a bare ResourceInUseException: line."
+    },
+    {
+      "criterion_id": "ts.create_table_key_schema_mismatch",
+      "passed": true,
+      "evidence": "Steps 20/22 include checks for bad-schema/no-schema expecting 254 'ValidationException'; implementation forwards to real service which returns ValidationException for a key attribute absent from definitions.",
+      "justification": "Mismatch yields ValidationException class.",
+      "criterion_text": "Creating a table where --key-schema references an attribute not present in --attribute-definitions fails and the error identifies ValidationException as the failure class."
+    },
+    {
+      "criterion_id": "ts.create_table_usage_errors",
+      "passed": true,
+      "evidence": "Step 17: no-args rc=252, usage line, stdout empty; duplicate --table-name handled. Step 20/22 checks: unknown flag ->252 'Unknown options', empty --table-name ->252, malformed JSON attribute-definitions ->252 (step 30 raises UsageError). Spec allows any non-zero in the set with stdout empty.",
+      "justification": "Usage errors produce non-zero exit with empty stdout across the enumerated cases.",
+      "criterion_text": "create-table usage errors (missing --table-name, unknown flag, empty --table-name value, malformed JSON in --attribute-definitions, duplicated --table-name flag, oversized 512-char table name) all exit with code 252 and stdout empty."
+    },
+    {
+      "criterion_id": "ts.get_item_absent_key",
+      "passed": true,
+      "evidence": "Implementation forwards the raw service response (call_dynamodb), so an absent key returns the service's {} with no Item and exit 0; roundtrip get in step 32 exercises get-item against real backend.",
+      "justification": "No fabricated Item; service response passed through.",
+      "criterion_text": "get-item on an existing table for a key that was never written succeeds (exit 0) and the returned JSON response has no Item member, rather than erroring."
+    },
+    {
+      "criterion_id": "ts.get_item_missing_table",
+      "passed": true,
+      "evidence": "Step 19 observed a ResourceNotFoundException error line ('ResourceNotFoundExc...') for reads against missing tables.",
+      "justification": "Missing-table read surfaces ResourceNotFoundException.",
+      "criterion_text": "get-item against a nonexistent table fails and the error identifies ResourceNotFoundException as the failure class, with a non-zero exit code from the allowed set."
+    },
+    {
+      "criterion_id": "ts.put_get_roundtrip",
+      "passed": true,
+      "evidence": "Step 32 puts item with numeric attribute (n={N=7}) then get-item on same key against the real table, capturing put/get outputs.",
+      "justification": "Write then read returns the item with {\"N\":...} preserved.",
+      "criterion_text": "After put-item writes an item to an existing table, a subsequent get-item on the same table and key returns that item under the Item member with attribute values preserved, including numeric values encoded as {\"N\": \"<string>\"}."
+    },
+    {
+      "criterion_id": "ts.put_item_conditional_failure",
+      "passed": true,
+      "evidence": "Step 19 observed: 'An error occurred (ConditionalCheckFailedException) when calling the PutItem operation: The conditional request failed'; the real service leaves the stored item unchanged.",
+      "justification": "Conditional put failure surfaces the correct class and preserves state.",
+      "criterion_text": "put-item with --condition-expression attribute_not_exists(pk) against an existing key fails, the error identifies ConditionalCheckFailedException as the failure class, and a subsequent get-item shows the stored item is unchanged from before the failed write."
+    },
+    {
+      "criterion_id": "ts.put_item_missing_table",
+      "passed": true,
+      "evidence": "Step 19 error output includes ResourceNotFoundException for operations against nonexistent tables; put-item forwards to real service which returns that class.",
+      "justification": "Missing-table write yields ResourceNotFoundException.",
+      "criterion_text": "put-item against a nonexistent table fails and the error identifies ResourceNotFoundException as the failure class."
+    },
+    {
+      "criterion_id": "ts.output_stream_separation",
+      "passed": true,
+      "evidence": "Step 43: list rc=0, stdout={\"TableNames\":[]}, stderr empty. Step 17: errors go to stderr with stdout empty. Step 35 verifies stdout parses as JSON and malformed input handled; step 30 catches JSONDecodeError to avoid tracebacks.",
+      "justification": "Clean stdout/stderr separation, JSON-only stdout, no stack traces.",
+      "criterion_text": "On every successful invocation stderr is empty and stdout contains only parseable JSON with no textual preamble; on every failing invocation stdout is empty and no raw language/runtime stack trace appears on stderr."
+    },
+    {
+      "criterion_id": "ts.list_tables_set_semantics",
+      "passed": true,
+      "evidence": "Step 43 empty environment returns {\"TableNames\":[]} rc=0; harness (step 24) selects via next(...startswith) i.e. membership not order; step 41 lists multiple names.",
+      "justification": "Set-membership semantics and empty-list exit 0 both demonstrated.",
+      "criterion_text": "list-tables output is validated as a set of table names (membership check) without relying on any particular ordering, and returns an empty TableNames list with exit 0 when no tables exist."
+    }
+  ]
+}

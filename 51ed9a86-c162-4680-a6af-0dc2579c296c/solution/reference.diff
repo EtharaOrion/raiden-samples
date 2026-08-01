@@ -1,0 +1,353 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,347 @@
++import sys
++import json
++import os
++import urllib.request
++import urllib.error
++
++TARGET_PREFIX = "AWSCognitoIdentityProviderService."
++
++
++import datetime as _qc_dt
++
++_QC_TS_FIELDS = ['CompletionDate', 'CreatedAt', 'CreationDate', 'DeviceCreateDate', 'DeviceLastAuthenticatedDate', 'DeviceLastModifiedDate', 'FeedbackDate', 'LastModifiedDate', 'StartDate', 'UserCreateDate', 'UserLastModifiedDate']
++
++
++def _isofix(o):
++    """Serialise AWS timestamp fields as ISO8601 strings, matching aws-cli v2."""
++    if isinstance(o, dict):
++        r = {}
++        for k, v in o.items():
++            if (k in _QC_TS_FIELDS and isinstance(v, (int, float))
++                    and not isinstance(v, bool)):
++                r[k] = _qc_dt.datetime.fromtimestamp(
++                    v, _qc_dt.timezone.utc).isoformat()
++            else:
++                r[k] = _isofix(v)
++        return r
++    if isinstance(o, list):
++        return [_isofix(x) for x in o]
++    return o
++
++def err_usage(msg):
++    sys.stderr.write("usage error: " + msg + "\n")
++    sys.exit(252)
++
++
++def parse_args(argv, spec):
++    result = {}
++    seen = set()
++    i = 0
++    while i < len(argv):
++        tok = argv[i]
++        if not tok.startswith("--"):
++            err_usage("Unknown option: " + tok)
++        if tok not in spec:
++            err_usage("Unknown options: " + tok)
++        api_name, typ, required = spec[tok]
++        vals = []
++        j = i + 1
++        while j < len(argv) and not (argv[j].startswith("--") and len(argv[j]) > 2 and not argv[j][2].isdigit()):
++            vals.append(argv[j])
++            j += 1
++        if not vals:
++            err_usage("Missing value for " + tok)
++        seen.add(tok)
++        if typ == "int":
++            try:
++                result[api_name] = int(vals[0])
++            except ValueError:
++                err_usage("Invalid int for " + tok)
++            i = i + 2
++        elif typ == "attrs":
++            result[api_name] = parse_attrs(vals)
++            i = j
++        elif typ == "ignore":
++            i = j
++        elif typ == "list":
++            result[api_name] = vals
++            i = j
++        else:
++            result[api_name] = vals[0]
++            i = i + 2
++    return result, seen
++
++
++def parse_attrs(vals):
++    attrs = []
++    for val in vals:
++        v = val.strip()
++        if v.startswith("[") or v.startswith("{"):
++            try:
++                data = json.loads(v)
++            except Exception:
++                err_usage("Invalid JSON for user-attributes")
++            if isinstance(data, dict):
++                data = [data]
++            attrs.extend(data)
++            continue
++        d = {}
++        for kv in val.split(","):
++            if "=" in kv:
++                k, x = kv.split("=", 1)
++                if k == "Name":
++                    d["Name"] = x
++                elif k == "Value":
++                    d["Value"] = x
++        if d:
++            attrs.append(d)
++    return attrs
++
++
++def call(op, body):
++    endpoint = os.environ.get("AWS_ENDPOINT_URL_COGNITO_IDENTITY_PROVIDER")
++    if not endpoint:
++        endpoint = os.environ.get("AWS_ENDPOINT_URL", "http://localhost:4566")
++    endpoint = endpoint.rstrip("/")
++    data = json.dumps(body).encode("utf-8")
++    req = urllib.request.Request(endpoint + "/", data=data, method="POST")
++    req.add_header("Content-Type", "application/x-amz-json-1.1")
++    req.add_header("X-Amz-Target", TARGET_PREFIX + op)
++    req.add_header("X-Amz-Date", "20260101T000000Z")
++    req.add_header(
++        "Authorization",
++        "AWS4-HMAC-SHA256 Credential=dummy/20260101/us-east-1/cognito-idp/aws4_request, "
++        "SignedHeaders=host;x-amz-date, Signature=dummy",
++    )
++    try:
++        resp = urllib.request.urlopen(req)
++        raw = resp.read()
++        if raw:
++            return json.loads(raw.decode("utf-8")), 0
++        return {}, 0
++    except urllib.error.HTTPError as e:
++        raw = e.read()
++        try:
++            errbody = json.loads(raw.decode("utf-8"))
++        except Exception:
++            errbody = {"__type": "UnknownError",
++                       "message": raw.decode("utf-8", "replace")}
++        sys.stderr.write(json.dumps(errbody) + "\n")
++        return None, 254
++    except Exception as e:
++        sys.stderr.write(json.dumps(
++            {"__type": "ConnectionError", "message": str(e)}) + "\n")
++        return None, 255
++
++
++def out(obj):
++    sys.stdout.write(json.dumps(_isofix(obj), indent=4, default=str) + "\n")
++
++
++def require(params, flagmap):
++    for api_name, flag in flagmap:
++        if api_name not in params:
++            err_usage("Missing required parameter: --" + flag)
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3:
++        err_usage("too few arguments")
++    service = argv[1]
++    if service != "cognito-idp":
++        err_usage("unknown service: " + service)
++    sub = argv[2]
++    rest = argv[3:]
++
++    if sub == "create-user-pool":
++        spec = {
++            "--pool-name": ("PoolName", "str", True),
++            "--policies": ("Policies", "ignore", False),
++            "--deletion-protection": ("DeletionProtection", "str", False),
++            "--lambda-config": ("LambdaConfig", "ignore", False),
++            "--auto-verified-attributes": ("AutoVerifiedAttributes", "ignore", False),
++            "--alias-attributes": ("AliasAttributes", "ignore", False),
++            "--username-attributes": ("UsernameAttributes", "ignore", False),
++            "--sms-verification-message": ("SmsVerificationMessage", "str", False),
++            "--email-verification-message": ("EmailVerificationMessage", "str", False),
++            "--email-verification-subject": ("EmailVerificationSubject", "str", False),
++            "--verification-message-template": ("VerificationMessageTemplate", "ignore", False),
++            "--sms-authentication-message": ("SmsAuthenticationMessage", "str", False),
++            "--mfa-configuration": ("MfaConfiguration", "str", False),
++            "--user-attribute-update-settings": ("UserAttributeUpdateSettings", "ignore", False),
++            "--device-configuration": ("DeviceConfiguration", "ignore", False),
++            "--email-configuration": ("EmailConfiguration", "ignore", False),
++            "--sms-configuration": ("SmsConfiguration", "ignore", False),
++            "--user-pool-tags": ("UserPoolTags", "ignore", False),
++            "--admin-create-user-config": ("AdminCreateUserConfig", "ignore", False),
++            "--schema": ("Schema", "ignore", False),
++            "--user-pool-add-ons": ("UserPoolAddOns", "ignore", False),
++            "--username-configuration": ("UsernameConfiguration", "ignore", False),
++            "--account-recovery-setting": ("AccountRecoverySetting", "ignore", False),
++            "--user-pool-tier": ("UserPoolTier", "str", False),
++        }
++        params, seen = parse_args(rest, spec)
++        require(params, [("PoolName", "pool-name")])
++        body = {"PoolName": params["PoolName"]}
++        for k in ("DeletionProtection", "SmsVerificationMessage",
++                  "EmailVerificationMessage", "EmailVerificationSubject",
++                  "SmsAuthenticationMessage", "MfaConfiguration", "UserPoolTier"):
++            if k in params:
++                body[k] = params[k]
++        resp, code = call("CreateUserPool", body)
++        if code != 0:
++            sys.exit(code)
++        out(resp)
++        sys.exit(0)
++
++    elif sub == "list-user-pools":
++        spec = {
++            "--max-results": ("MaxResults", "int", False),
++            "--next-token": ("NextToken", "str", False),
++        }
++        params, seen = parse_args(rest, spec)
++        if "MaxResults" not in params:
++            params["MaxResults"] = 60
++        body = {"MaxResults": params["MaxResults"]}
++        if "NextToken" in params:
++            body["NextToken"] = params["NextToken"]
++        resp, code = call("ListUserPools", body)
++        if code != 0:
++            sys.exit(code)
++        out(resp)
++        sys.exit(0)
++
++    elif sub == "describe-user-pool":
++        spec = {"--user-pool-id": ("UserPoolId", "str", True)}
++        params, seen = parse_args(rest, spec)
++        require(params, [("UserPoolId", "user-pool-id")])
++        resp, code = call("DescribeUserPool",
++                          {"UserPoolId": params["UserPoolId"]})
++        if code != 0:
++            sys.exit(code)
++        out(resp)
++        sys.exit(0)
++
++    elif sub == "create-user-pool-client":
++        spec = {
++            "--user-pool-id": ("UserPoolId", "str", True),
++            "--client-name": ("ClientName", "str", True),
++            "--generate-secret": ("GenerateSecret", "ignore", False),
++            "--refresh-token-validity": ("RefreshTokenValidity", "int", False),
++            "--access-token-validity": ("AccessTokenValidity", "int", False),
++            "--id-token-validity": ("IdTokenValidity", "int", False),
++            "--token-validity-units": ("TokenValidityUnits", "ignore", False),
++            "--read-attributes": ("ReadAttributes", "ignore", False),
++            "--write-attributes": ("WriteAttributes", "ignore", False),
++            "--explicit-auth-flows": ("ExplicitAuthFlows", "ignore", False),
++            "--supported-identity-providers": ("SupportedIdentityProviders", "ignore", False),
++            "--callback-ur-ls": ("CallbackURLs", "ignore", False),
++            "--logout-ur-ls": ("LogoutURLs", "ignore", False),
++            "--default-redirect-uri": ("DefaultRedirectURI", "str", False),
++            "--allowed-o-auth-flows": ("AllowedOAuthFlows", "ignore", False),
++            "--allowed-o-auth-scopes": ("AllowedOAuthScopes", "ignore", False),
++            "--allowed-o-auth-flows-user-pool-client": ("AllowedOAuthFlowsUserPoolClient", "ignore", False),
++            "--analytics-configuration": ("AnalyticsConfiguration", "ignore", False),
++            "--prevent-user-existence-errors": ("PreventUserExistenceErrors", "str", False),
++            "--enable-token-revocation": ("EnableTokenRevocation", "ignore", False),
++            "--enable-propagate-additional-user-context-data": ("EnablePropagateAdditionalUserContextData", "ignore", False),
++            "--auth-session-validity": ("AuthSessionValidity", "int", False),
++            "--refresh-token-rotation": ("RefreshTokenRotation", "ignore", False),
++        }
++        params, seen = parse_args(rest, spec)
++        require(params, [("UserPoolId", "user-pool-id"),
++                         ("ClientName", "client-name")])
++        body = {"UserPoolId": params["UserPoolId"],
++                "ClientName": params["ClientName"]}
++        for k in ("RefreshTokenValidity", "AccessTokenValidity",
++                  "IdTokenValidity", "PreventUserExistenceErrors",
++                  "AuthSessionValidity", "DefaultRedirectURI"):
++            if k in params:
++                body[k] = params[k]
++        resp, code = call("CreateUserPoolClient", body)
++        if code != 0:
++            sys.exit(code)
++        out(resp)
++        sys.exit(0)
++
++    elif sub == "admin-create-user":
++        spec = {
++            "--user-pool-id": ("UserPoolId", "str", True),
++            "--username": ("Username", "str", True),
++            "--user-attributes": ("UserAttributes", "attrs", False),
++            "--validation-data": ("ValidationData", "ignore", False),
++            "--temporary-password": ("TemporaryPassword", "str", False),
++            "--force-alias-creation": ("ForceAliasCreation", "ignore", False),
++            "--message-action": ("MessageAction", "str", False),
++            "--desired-delivery-mediums": ("DesiredDeliveryMediums", "ignore", False),
++            "--client-metadata": ("ClientMetadata", "ignore", False),
++        }
++        params, seen = parse_args(rest, spec)
++        require(params, [("UserPoolId", "user-pool-id"),
++                         ("Username", "username")])
++        body = {"UserPoolId": params["UserPoolId"],
++                "Username": params["Username"]}
++        for k in ("UserAttributes", "TemporaryPassword", "MessageAction"):
++            if k in params:
++                body[k] = params[k]
++        resp, code = call("AdminCreateUser", body)
++        if code != 0:
++            sys.exit(code)
++        out(resp)
++        sys.exit(0)
++
++    elif sub == "admin-get-user":
++        spec = {
++            "--user-pool-id": ("UserPoolId", "str", True),
++            "--username": ("Username", "str", True),
++        }
++        params, seen = parse_args(rest, spec)
++        require(params, [("UserPoolId", "user-pool-id"),
++                         ("Username", "username")])
++        resp, code = call("AdminGetUser",
++                          {"UserPoolId": params["UserPoolId"],
++                           "Username": params["Username"]})
++        if code != 0:
++            sys.exit(code)
++        out(resp)
++        sys.exit(0)
++
++    elif sub == "list-users":
++        spec = {
++            "--user-pool-id": ("UserPoolId", "str", True),
++            "--attributes-to-get": ("AttributesToGet", "ignore", False),
++            "--limit": ("Limit", "int", False),
++            "--pagination-token": ("PaginationToken", "str", False),
++            "--filter": ("Filter", "str", False),
++        }
++        params, seen = parse_args(rest, spec)
++        require(params, [("UserPoolId", "user-pool-id")])
++        body = {"UserPoolId": params["UserPoolId"]}
++        for k in ("Limit", "PaginationToken", "Filter"):
++            if k in params:
++                body[k] = params[k]
++        resp, code = call("ListUsers", body)
++        if code != 0:
++            sys.exit(code)
++        out(resp)
++        sys.exit(0)
++
++    elif sub == "delete-user-pool":
++        spec = {"--user-pool-id": ("UserPoolId", "str", True)}
++        params, seen = parse_args(rest, spec)
++        require(params, [("UserPoolId", "user-pool-id")])
++        resp, code = call("DeleteUserPool",
++                          {"UserPoolId": params["UserPoolId"]})
++        if code != 0:
++            sys.exit(code)
++        if resp:
++            out(resp)
++        sys.exit(0)
++
++    else:
++        err_usage("Invalid choice: " + sub)
++
++
++if __name__ == "__main__":
++    main()

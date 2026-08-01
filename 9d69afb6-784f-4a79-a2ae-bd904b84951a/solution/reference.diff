@@ -1,0 +1,348 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,342 @@
++import sys
++import os
++import json
++import hashlib
++import urllib.request
++import urllib.error
++
++E_USAGE = 252
++E_SERVICE = 254
++E_UNKNOWN = 255
++
++TARGETS = {
++    "create-queue": "CreateQueue",
++    "list-queues": "ListQueues",
++    "get-queue-url": "GetQueueUrl",
++    "get-queue-attributes": "GetQueueAttributes",
++    "set-queue-attributes": "SetQueueAttributes",
++    "send-message": "SendMessage",
++    "send-message-batch": "SendMessageBatch",
++    "receive-message": "ReceiveMessage",
++    "delete-message": "DeleteMessage",
++    "delete-message-batch": "DeleteMessageBatch",
++    "change-message-visibility": "ChangeMessageVisibility",
++    "change-message-visibility-batch": "ChangeMessageVisibilityBatch",
++    "purge-queue": "PurgeQueue",
++    "tag-queue": "TagQueue",
++    "untag-queue": "UntagQueue",
++    "list-queue-tags": "ListQueueTags",
++    "delete-queue": "DeleteQueue",
++}
++
++# kinds: str, int, json, list, tags
++SPECS = {
++    "create-queue": {
++        "flags": {
++            "--queue-name": ("QueueName", "str"),
++            "--attributes": ("Attributes", "json"),
++            "--tags": ("Tags", "tags"),
++        },
++        "require_all": ["--queue-name"],
++    },
++    "list-queues": {
++        "flags": {
++            "--queue-name-prefix": ("QueueNamePrefix", "str"),
++            "--next-token": ("NextToken", "str"),
++            "--max-results": ("MaxResults", "int"),
++        },
++        "require_all": [],
++    },
++    "get-queue-url": {
++        "flags": {"--queue-name": ("QueueName", "str")},
++        "require_all": ["--queue-name"],
++    },
++    "get-queue-attributes": {
++        "flags": {
++            "--queue-url": ("QueueUrl", "str"),
++            "--attribute-names": ("AttributeNames", "list"),
++        },
++        "require_all": ["--queue-url"],
++    },
++    "set-queue-attributes": {
++        "flags": {
++            "--queue-url": ("QueueUrl", "str"),
++            "--attributes": ("Attributes", "json"),
++        },
++        "require_all": ["--queue-url", "--attributes"],
++    },
++    "send-message": {
++        "flags": {
++            "--queue-url": ("QueueUrl", "str"),
++            "--message-body": ("MessageBody", "str"),
++            "--delay-seconds": ("DelaySeconds", "int"),
++            "--message-group-id": ("MessageGroupId", "str"),
++            "--attributes": ("Attributes", "json"),
++        },
++        "require_all": ["--queue-url", "--message-body"],
++    },
++    "send-message-batch": {
++        "flags": {
++            "--queue-url": ("QueueUrl", "str"),
++            "--entries": ("Entries", "json"),
++        },
++        "require_all": ["--queue-url", "--entries"],
++    },
++    "receive-message": {
++        "flags": {
++            "--queue-url": ("QueueUrl", "str"),
++            "--max-number-of-messages": ("MaxNumberOfMessages", "int"),
++            "--visibility-timeout": ("VisibilityTimeout", "int"),
++            "--wait-time-seconds": ("WaitTimeSeconds", "int"),
++            "--attribute-names": ("AttributeNames", "list"),
++        },
++        "require_all": ["--queue-url"],
++    },
++    "delete-message": {
++        "flags": {
++            "--queue-url": ("QueueUrl", "str"),
++            "--receipt-handle": ("ReceiptHandle", "str"),
++        },
++        "require_all": ["--queue-url", "--receipt-handle"],
++    },
++    "delete-message-batch": {
++        "flags": {
++            "--queue-url": ("QueueUrl", "str"),
++            "--entries": ("Entries", "json"),
++        },
++        "require_all": ["--queue-url", "--entries"],
++    },
++    "change-message-visibility": {
++        "flags": {
++            "--queue-url": ("QueueUrl", "str"),
++            "--receipt-handle": ("ReceiptHandle", "str"),
++            "--visibility-timeout": ("VisibilityTimeout", "int"),
++        },
++        "require_all": ["--queue-url", "--receipt-handle", "--visibility-timeout"],
++    },
++    "change-message-visibility-batch": {
++        "flags": {
++            "--queue-url": ("QueueUrl", "str"),
++            "--entries": ("Entries", "json"),
++        },
++        "require_all": ["--queue-url", "--entries"],
++    },
++    "purge-queue": {
++        "flags": {"--queue-url": ("QueueUrl", "str")},
++        "require_all": ["--queue-url"],
++    },
++    "tag-queue": {
++        "flags": {
++            "--queue-url": ("QueueUrl", "str"),
++            "--tags": ("Tags", "tags"),
++        },
++        "require_all": ["--queue-url", "--tags"],
++    },
++    "untag-queue": {
++        "flags": {
++            "--queue-url": ("QueueUrl", "str"),
++            "--tag-keys": ("TagKeys", "list"),
++        },
++        "require_all": ["--queue-url", "--tag-keys"],
++    },
++    "list-queue-tags": {
++        "flags": {"--queue-url": ("QueueUrl", "str")},
++        "require_all": ["--queue-url"],
++    },
++    "delete-queue": {
++        "flags": {"--queue-url": ("QueueUrl", "str")},
++        "require_all": ["--queue-url"],
++    },
++}
++
++
++def usage_err(msg):
++    sys.stderr.write(str(msg) + "\n")
++    sys.exit(E_USAGE)
++
++
++def md5hex(s):
++    return hashlib.md5(s.encode("utf-8")).hexdigest()
++
++
++def parse_shorthand_tags(v):
++    out = {}
++    for part in v.split(","):
++        part = part.strip()
++        if not part:
++            continue
++        if "=" not in part:
++            raise ValueError("bad tag shorthand")
++        k, val = part.split("=", 1)
++        out[k] = val
++    return out
++
++
++def parse_list_value(v):
++    # AWS CLI list: accept JSON array, or space/comma separated tokens.
++    s = v.strip()
++    if s.startswith("["):
++        pv = json.loads(s)
++        if not isinstance(pv, list):
++            raise ValueError("not a list")
++        return pv
++    # split on whitespace and commas
++    tokens = []
++    for chunk in s.replace(",", " ").split():
++        tokens.append(chunk)
++    if not tokens:
++        raise ValueError("empty list")
++    return tokens
++
++
++def parse_args(sub, argv):
++    spec = SPECS[sub]
++    flags = spec["flags"]
++    params = {}
++    list_accum = {}  # param -> list, for multi-token list flags
++    seen = set()
++    i = 0
++    n = len(argv)
++    while i < n:
++        tok = argv[i]
++        if not tok.startswith("--"):
++            usage_err("Unknown options: %s" % tok)
++        if tok not in flags:
++            usage_err("Unknown options: %s" % tok)
++        param, kind = flags[tok]
++
++        if kind == "list":
++            # consume following non-flag tokens (AWS CLI space-separated)
++            i += 1
++            vals = []
++            while i < n and not argv[i].startswith("--"):
++                vals.append(argv[i])
++                i += 1
++            if len(vals) == 1 and (vals[0].strip().startswith("[")):
++                try:
++                    pv = json.loads(vals[0])
++                    if not isinstance(pv, list):
++                        raise ValueError()
++                    vals = pv
++                except (ValueError, json.JSONDecodeError):
++                    usage_err("Invalid value for %s" % tok)
++            elif len(vals) == 1:
++                # could be comma separated
++                try:
++                    vals = parse_list_value(vals[0])
++                except (ValueError, json.JSONDecodeError):
++                    usage_err("Invalid value for %s" % tok)
++            if not vals:
++                usage_err("Missing value for %s" % tok)
++            params.setdefault(param, [])
++            params[param].extend(vals)
++            seen.add(tok)
++            continue
++
++        if tok in seen:
++            usage_err("argument %s: duplicate option" % tok)
++        seen.add(tok)
++        if i + 1 >= n:
++            usage_err("Missing value for %s" % tok)
++        val = argv[i + 1]
++        i += 2
++        if val == "" and kind not in ("str",):
++            usage_err("Empty value for %s" % tok)
++        try:
++            if kind == "str":
++                params[param] = val
++            elif kind == "int":
++                params[param] = int(val)
++            elif kind == "json":
++                params[param] = json.loads(val)
++            elif kind == "tags":
++                s = val.strip()
++                if s.startswith("{"):
++                    params[param] = json.loads(s)
++                else:
++                    params[param] = parse_shorthand_tags(s)
++        except ValueError:
++            usage_err("Invalid value for %s" % tok)
++        except json.JSONDecodeError:
++            usage_err("Invalid JSON for %s" % tok)
++
++    for req in spec["require_all"]:
++        pname = flags[req][0]
++        if pname not in params:
++            usage_err("argument %s: is required" % req)
++
++    if "QueueName" in params:
++        if len(params["QueueName"]) > 80:
++            usage_err("QueueName too long")
++    return params
++
++
++def call(op, body):
++    endpoint = os.environ.get("AWS_ENDPOINT_URL_SQS") or os.environ.get(
++        "AWS_ENDPOINT_URL"
++    ) or "http://localhost:9324"
++    data = json.dumps(body).encode("utf-8")
++    req = urllib.request.Request(endpoint, data=data, method="POST")
++    req.add_header("Content-Type", "application/x-amz-json-1.0")
++    req.add_header("X-Amz-Target", "AmazonSQS." + op)
++    req.add_header("Content-Length", str(len(data)))
++    region = os.environ.get("AWS_REGION") or os.environ.get(
++        "AWS_DEFAULT_REGION"
++    ) or "us-east-1"
++    req.add_header(
++        "Authorization",
++        "AWS4-HMAC-SHA256 Credential=dummy/20260101/%s/sqs/aws4_request, "
++        "SignedHeaders=host;x-amz-date, Signature=dummy" % region,
++    )
++    try:
++        resp = urllib.request.urlopen(req)
++        raw = resp.read().decode("utf-8")
++        return resp.getcode(), raw
++    except urllib.error.HTTPError as e:
++        raw = e.read().decode("utf-8")
++        return e.code, raw
++    except urllib.error.URLError as e:
++        sys.stderr.write("Could not connect to the endpoint URL: %s\n" % str(e))
++        sys.exit(E_SERVICE)
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 2 or argv[1] != "sqs":
++        usage_err("usage: sqs <command>")
++    if len(argv) < 3:
++        usage_err("usage: sqs <command>")
++    sub = argv[2]
++    if sub not in TARGETS:
++        usage_err("Unknown command: %s" % sub)
++
++    params = parse_args(sub, argv[3:])
++    op = TARGETS[sub]
++
++    code, raw = call(op, params)
++
++    if code >= 400:
++        out = raw if raw else ""
++        if out and not out.endswith("\n"):
++            out += "\n"
++        sys.stderr.write(out)
++        sys.exit(E_SERVICE)
++
++    empty_ops = {
++        "SetQueueAttributes", "ChangeMessageVisibility", "PurgeQueue",
++        "TagQueue", "UntagQueue", "DeleteMessage", "DeleteQueue",
++    }
++    try:
++        parsed = json.loads(raw) if raw.strip() else {}
++    except json.JSONDecodeError:
++        parsed = {}
++
++    if op in empty_ops:
++        sys.exit(0)
++
++    print(json.dumps(parsed, indent=4))
++    sys.exit(0)
++
++
++if __name__ == "__main__":
++    main()

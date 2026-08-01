@@ -1,0 +1,186 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,180 @@
++import sys
++import os
++import json
++import base64
++import urllib.request
++import urllib.error
++
++USAGE_EXIT = 252
++SERVICE_EXIT = 254
++
++
++def get_endpoint():
++    ep = os.environ.get("AWS_ENDPOINT_URL_DYNAMODB") or os.environ.get("AWS_ENDPOINT_URL")
++    if not ep:
++        ep = os.environ["AWS_ENDPOINT_URL"]
++    return ep
++
++
++def call(op, payload):
++    endpoint = get_endpoint()
++    data = json.dumps(payload).encode("utf-8")
++    req = urllib.request.Request(endpoint, data=data, method="POST")
++    req.add_header("Content-Type", "application/x-amz-json-1.0")
++    req.add_header("X-Amz-Target", "DynamoDB_20120810." + op)
++    req.add_header("Authorization",
++                   "AWS4-HMAC-SHA256 Credential=dummy/20120810/us-east-1/dynamodb/aws4_request, "
++                   "SignedHeaders=host;x-amz-date;x-amz-target, Signature=dummy")
++    req.add_header("X-Amz-Date", "20120810T000000Z")
++    try:
++        resp = urllib.request.urlopen(req)
++        body = resp.read().decode("utf-8")
++        if body:
++            return json.loads(body)
++        return {}
++    except urllib.error.HTTPError as e:
++        body = e.read().decode("utf-8")
++        code = "UnknownError"
++        msg = ""
++        try:
++            parsed = json.loads(body)
++            typ = parsed.get("__type", "")
++            code = typ.split("#")[-1] if typ else "UnknownError"
++            msg = parsed.get("message") or parsed.get("Message") or ""
++        except Exception:
++            msg = body
++        sys.stderr.write("\nAn error occurred (%s) when calling the %s operation: %s\n" % (code, op, msg))
++        sys.exit(SERVICE_EXIT)
++    except urllib.error.URLError as e:
++        sys.stderr.write("Could not connect to the endpoint URL: %s\n" % str(e))
++        sys.exit(SERVICE_EXIT)
++
++
++def usage_error(msg):
++    sys.stderr.write("usage error: %s\n" % msg)
++    sys.exit(USAGE_EXIT)
++
++
++# flag -> (field, type) where type is 'str', 'json', or 'int'
++SPECS = {
++    "list-tables": {
++        "--exclusive-start-table-name": ("ExclusiveStartTableName", "str"),
++        "--limit": ("Limit", "int"),
++    },
++    "describe-limits": {},
++    "put-item": {
++        "--condition-expression": ("ConditionExpression", "str"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--expected": ("Expected", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--item": ("Item", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++        "--return-values": ("ReturnValues", "str"),
++        "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++        "--table-name": ("TableName", "str"),
++    },
++    "update-item": {
++        "--attribute-updates": ("AttributeUpdates", "json"),
++        "--condition-expression": ("ConditionExpression", "str"),
++        "--conditional-operator": ("ConditionalOperator", "str"),
++        "--expected": ("Expected", "json"),
++        "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++        "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++        "--key": ("Key", "json"),
++        "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++        "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++        "--return-values": ("ReturnValues", "str"),
++        "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++        "--table-name": ("TableName", "str"),
++        "--update-expression": ("UpdateExpression", "str"),
++    },
++}
++
++
++def parse_args(spec, args):
++    result = {}
++    seen = set()
++    i = 0
++    n = len(args)
++    while i < n:
++        tok = args[i]
++        if not tok.startswith("--"):
++            usage_error("Unknown argument: %s" % tok)
++        if tok not in spec:
++            usage_error("Unknown flag: %s" % tok)
++        if tok in seen:
++            usage_error("Duplicate flag: %s" % tok)
++        seen.add(tok)
++        field, typ = spec[tok]
++        if i + 1 >= n:
++            usage_error("Flag %s requires a value" % tok)
++        val = args[i + 1]
++        i += 2
++        if val.startswith("--"):
++            usage_error("Flag %s requires a value" % tok)
++        if typ == "int":
++            try:
++                result[field] = int(val)
++            except ValueError:
++                usage_error("Flag %s requires an integer" % tok)
++        elif typ == "json":
++            try:
++                result[field] = json.loads(val)
++            except Exception:
++                usage_error("Flag %s requires valid JSON" % tok)
++        else:
++            result[field] = val
++    return result
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3:
++        usage_error("missing command")
++    sub = argv[2]
++
++    if sub not in SPECS:
++        usage_error("Unknown subcommand: %s" % sub)
++
++    spec = SPECS[sub]
++    args = argv[3:]
++    params = parse_args(spec, args)
++
++    if sub == "list-tables":
++        out = call("ListTables", params)
++        print(json.dumps(out, indent=4))
++        sys.exit(0)
++
++    elif sub == "describe-limits":
++        out = call("DescribeLimits", params)
++        print(json.dumps(out, indent=4))
++        sys.exit(0)
++
++    elif sub == "put-item":
++        if "TableName" not in params:
++            usage_error("--table-name is required")
++        if "Item" not in params:
++            usage_error("--item is required")
++        out = call("PutItem", params)
++        if out:
++            print(json.dumps(out, indent=4))
++        sys.exit(0)
++
++    elif sub == "update-item":
++        if "TableName" not in params:
++            usage_error("--table-name is required")
++        if "Key" not in params:
++            usage_error("--key is required")
++        out = call("UpdateItem", params)
++        if out:
++            print(json.dumps(out, indent=4))
++        sys.exit(0)
++
++    else:
++        usage_error("Unknown subcommand: %s" % sub)
++
++
++if __name__ == "__main__":
++    main()

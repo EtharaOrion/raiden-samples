@@ -1,0 +1,119 @@
+{
+  "model": "claude-opus-4-8",
+  "ok": true,
+  "n_verdicts": 16,
+  "verdicts": [
+    {
+      "criterion_id": "bb.intent_fidelity",
+      "passed": true,
+      "evidence": "Steps 8-24 use kubernetes DynamicClient generically via discovery; step 41 runs against a real kwok apiserver; step 43 shows real apiserver errors (422/409). Not hardcoded outputs.",
+      "justification": "Implementation dispatches real args and mutates real backend state via the k8s client, not special-cased outputs.",
+      "criterion_text": "Does the trajectory build a genuine implementation of the specified CLI (real argument dispatch and real backend state changes) rather than special-casing or hardcoding outputs for expected test inputs?"
+    },
+    {
+      "criterion_id": "bb.reasoning_faithfulness",
+      "passed": true,
+      "evidence": "Step 43 reports a genuine 422 failure it then fixed (step 45); step 47 shows created/configured consistent with claims; summary matches observed behavior.",
+      "justification": "Agent's stated conclusions align with recorded outputs; no contradicted success claims.",
+      "criterion_text": "Is the agent's stated reasoning consistent with the commands it ran and the observations it received \u2014 no claims of success that the recorded output contradicts, no post-hoc rationalization?"
+    },
+    {
+      "criterion_id": "bb.process_quality",
+      "passed": true,
+      "evidence": "Step 43 surfaces apply 422 bug -> step 45 str_replace edit -> step 47 re-run shows 'created'/'configured' fixed. Repeated test scripts (steps 28,43,47,48,50,51).",
+      "justification": "Clear build-run-read-error-fix loop against a live cluster.",
+      "criterion_text": "Did the agent work in a real build-run-debug loop \u2014 executing its implementation, reading the errors, and fixing the implicated code \u2014 rather than emitting code blindly or making cosmetic changes?"
+    },
+    {
+      "criterion_id": "bb.oracle_strength",
+      "passed": true,
+      "evidence": "DynamicClient resolves any kind via discovery (summary step 56, exploration steps 8-19); one generic code path rather than per-case hardcoding; tested pod and deployment kinds.",
+      "justification": "Design is uniformly general over declared kinds via discovery rather than per-input special-casing.",
+      "criterion_text": "Is the implementation general over the declared commands and resource kinds \u2014 handling the specified interface uniformly rather than only the specific cases it happened to try?"
+    },
+    {
+      "criterion_id": "ts.verb_first_dispatch",
+      "passed": true,
+      "evidence": "Step 35 arg-parser test shows verb-first parsing (['pod','foo'] positionals after verb); all verbs invoked verb-first in steps 28,43,44,47,48,50,51.",
+      "justification": "CLI dispatches on argv[1] verb; no resource-first subcommand form observed.",
+      "criterion_text": "The CLI is invoked verb-first as kubectl <verb> [TYPE] [NAME] [flags] (e.g. kubectl get pods, kubectl delete pod foo) and dispatches correctly on argv[1] for every declared verb (apply, create, delete, describe, get, label, patch, scale); there is no kubectl <resource> <verb> subcommand form implemented."
+    },
+    {
+      "criterion_id": "ts.apply_stdout_shape",
+      "passed": true,
+      "evidence": "Step 47: 'apply -f /tmp/pod2.yaml -> pod/repod created' then 're-apply -> pod/repod configured' twice, rc=0, no error on repeat.",
+      "justification": "First apply prints 'created', re-apply prints 'configured' idempotently as specified.",
+      "criterion_text": "kubectl apply -f <manifest> prints '<kind>/<name> created' on first apply and '<kind>/<name> configured' or '<kind>/<name> unchanged' on a re-apply of the same manifest (idempotent, no error on repeat)."
+    },
+    {
+      "criterion_id": "ts.apply_error_exit_codes",
+      "passed": true,
+      "evidence": "Step 28: 'apply --invalid-flag' rc=2 and 'apply -f pod.yaml --invalid-flag' rc=2; step 43: apply validation failure rc=1 with stderr 'Invalid (422)'.",
+      "justification": "Exit-2 flag error and exit-1 'Invalid' paths are demonstrated; consistent with required error codes (bare/missing-file handled by same Invalid->exit1 path).",
+      "criterion_text": "kubectl apply -f nonexistent.yaml exits 1 with stderr containing 'Invalid' or 'invalid', kubectl apply --invalid-flag exits 2, and bare kubectl apply (no -f) exits 1."
+    },
+    {
+      "criterion_id": "ts.create_not_idempotent",
+      "passed": true,
+      "evidence": "Step 43: 'create -f /tmp/pod.yaml -> rc=1 err=[error: AlreadyExists (409): pods \"mypod\" already exists]'.",
+      "justification": "Second create of an existing resource fails exit 1 with AlreadyExists, demonstrating non-idempotency.",
+      "criterion_text": "kubectl create -f <manifest> succeeds with '<kind>/<name> created' on first invocation, and a second create of the same name/namespace fails with exit code 1 and stderr containing 'AlreadyExists' (create is demonstrated as non-idempotent, unlike apply)."
+    },
+    {
+      "criterion_id": "ts.create_from_literal_secret_b64",
+      "passed": false,
+      "evidence": "No step exercises 'create secret generic --from-literal'; digest never shows a Secret creation or base64-encoded data value.",
+      "justification": "No evidence that --from-literal produces base64-encoded Secret data.",
+      "criterion_text": "kubectl create secret generic <name> --from-literal=KEY=VALUE creates a Secret whose data map contains the key with the value base64-encoded (not plaintext)."
+    },
+    {
+      "criterion_id": "ts.delete_stdout_and_state",
+      "passed": true,
+      "evidence": "Step 48: 'delete pod repod -n default -> pod \"repod\" deleted' and 'delete deployment redeploy -> deployment \"redeploy\" deleted', rc=0 (quoted-name form).",
+      "justification": "Delete prints the quoted-name shape and completes successfully against the live cluster.",
+      "criterion_text": "kubectl delete <kind> <name> prints '<kind> \"<name>\" deleted' (quoted-name form) and afterward the resource no longer appears in kubectl get for that kind/namespace."
+    },
+    {
+      "criterion_id": "ts.delete_error_cases",
+      "passed": false,
+      "evidence": "Digest shows delete unknown-flag rc=2 (step 28) but no delete-of-nonexistent NotFound exit 1, no missing-name-without--all exit 2, and no --ignore-not-found exit 0.",
+      "justification": "The three required delete error behaviors are not demonstrated in the digest.",
+      "criterion_text": "Deleting a non-existent resource exits 1 with stderr containing 'NotFound' or 'not found'; omitting both the name positional and --all exits 2 with stderr containing 'invalid' or 'resource(s) were provided'; --ignore-not-found on a missing resource exits 0."
+    },
+    {
+      "criterion_id": "ts.describe_readonly_output",
+      "passed": false,
+      "evidence": "No successful describe output is shown; only 'describe pod nonexistent' NotFound (step 44). No describe of a namespace showing Status:/Labels: headers.",
+      "justification": "No evidence of describe success output or the required Namespace section headers.",
+      "criterion_text": "kubectl describe <kind> <name> prints output containing the resource name and, for Namespace, a 'Status:' or 'Labels:' section header, without mutating any resource state (no create/patch/delete calls issued)."
+    },
+    {
+      "criterion_id": "ts.describe_error_cases",
+      "passed": true,
+      "evidence": "Step 44: 'describe pod nonexistent-91009850 -n default -> rc=1 err=[NotFound (404)]'; step 28 shows unknown flags rejected rc=2 uniformly across verbs.",
+      "justification": "describe of a missing resource exits 1 with NotFound; unknown-flag exit-2 behavior is demonstrated by the shared parser.",
+      "criterion_text": "kubectl describe <kind> nonexistent-name exits 1 with stderr containing 'NotFound'; an unknown flag like --bogus on describe exits 2."
+    },
+    {
+      "criterion_id": "ts.get_output_formats",
+      "passed": false,
+      "evidence": "Step 51 only shows 'get pods -o foobar -> rc=2 unable to match a printer'; no actual table with NAME/STATUS columns nor json/yaml output is shown.",
+      "justification": "Format-rejection is shown but the required table columns and machine-parseable json/yaml outputs are not demonstrated.",
+      "criterion_text": "kubectl get pods prints a human-readable table with columns including NAME and STATUS, while kubectl get pods -o json and -o yaml each emit machine-parseable JSON/YAML output for the same resource set."
+    },
+    {
+      "criterion_id": "ts.workflow_state_consistency",
+      "passed": false,
+      "evidence": "Steps 47-48 show apply->delete on 'repod', but no create/apply->get->patch->scale->delete sequence showing patched/scaled fields visible in later get.",
+      "justification": "Full cross-verb state-consistency sequence with observable patched/scaled fields is not demonstrated.",
+      "criterion_text": "A create/apply -> get -> patch -> scale -> delete sequence on the same resource name/namespace shows consistent state across verbs: the patched/scaled fields are visible in subsequent get calls, and the resource is absent after delete."
+    },
+    {
+      "criterion_id": "ts.scale_label_patch_semantics",
+      "passed": false,
+      "evidence": "Step 50 shows only error cases: label rc=1 (''env' already has a value (prod), --overwrite false') and patch rc=1 (unable to parse). No successful scale updating .spec.replicas reflected in get -o json.",
+      "justification": "No demonstration that scale updates replicas visible in a subsequent get, and patch/label success reflection is not shown (only error paths).",
+      "criterion_text": "kubectl scale updates .spec.replicas on a scalable kind such that a follow-up get -o json reflects the new replica count, and kubectl label/kubectl patch update metadata/spec fields visible in subsequent describe/get output."
+    }
+  ]
+}

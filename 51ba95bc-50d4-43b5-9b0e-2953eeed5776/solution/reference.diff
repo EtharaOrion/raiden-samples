@@ -1,0 +1,302 @@
+diff --git a/submission/main.py b/submission/main.py
+new file mode 100644
+index 0000000..0000001
+--- /dev/null
++++ b/submission/main.py
+@@ -0,0 +1,296 @@
++import os
++import sys
++import json
++import base64
++import urllib.request
++import urllib.error
++
++
++def get_endpoint():
++    return os.environ.get("AWS_ENDPOINT_URL_DYNAMODB") or os.environ["AWS_ENDPOINT_URL"]
++
++
++def call(op, payload):
++    endpoint = get_endpoint()
++    data = json.dumps(payload).encode("utf-8")
++    req = urllib.request.Request(endpoint, data=data, method="POST")
++    req.add_header("Content-Type", "application/x-amz-json-1.0")
++    req.add_header("X-Amz-Target", "DynamoDB_20120810." + op)
++    req.add_header("Authorization",
++                   "AWS4-HMAC-SHA256 Credential=dummy/20200101/us-east-1/dynamodb/aws4_request, "
++                   "SignedHeaders=host;x-amz-date;x-amz-target, Signature=dummy")
++    req.add_header("X-Amz-Date", "20200101T000000Z")
++    try:
++        resp = urllib.request.urlopen(req)
++        body = resp.read().decode("utf-8")
++        if body:
++            return json.loads(body)
++        return {}
++    except urllib.error.HTTPError as e:
++        body = e.read().decode("utf-8")
++        try:
++            parsed = json.loads(body)
++        except Exception:
++            parsed = {}
++        raise ServiceError(parsed, body)
++
++
++class ServiceError(Exception):
++    def __init__(self, parsed, raw):
++        self.parsed = parsed
++        self.raw = raw
++
++    def code(self):
++        t = self.parsed.get("__type") or self.parsed.get("code") or "ServiceError"
++        if "#" in t:
++            t = t.split("#", 1)[1]
++        return t
++
++    def message(self):
++        return self.parsed.get("message") or self.parsed.get("Message") or ""
++
++
++def usage_error(msg):
++    sys.stderr.write("usage error: " + msg + "\n")
++    sys.exit(252)
++
++
++# Flag specs per subcommand: flag -> (field, type)
++# type: "str", "json", "bool", "adefs", "kschema", "prov"
++
++GET_ITEM_FLAGS = {
++    "--attributes-to-get": ("AttributesToGet", "jsonlist"),
++    "--consistent-read": ("ConsistentRead", "bool"),
++    "--no-consistent-read": ("ConsistentRead", "boolfalse"),
++    "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++    "--key": ("Key", "json"),
++    "--projection-expression": ("ProjectionExpression", "str"),
++    "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++    "--table-name": ("TableName", "str"),
++}
++
++PUT_ITEM_FLAGS = {
++    "--condition-expression": ("ConditionExpression", "str"),
++    "--conditional-operator": ("ConditionalOperator", "str"),
++    "--expected": ("Expected", "json"),
++    "--expression-attribute-names": ("ExpressionAttributeNames", "json"),
++    "--expression-attribute-values": ("ExpressionAttributeValues", "json"),
++    "--item": ("Item", "json"),
++    "--return-consumed-capacity": ("ReturnConsumedCapacity", "str"),
++    "--return-item-collection-metrics": ("ReturnItemCollectionMetrics", "str"),
++    "--return-values": ("ReturnValues", "str"),
++    "--return-values-on-condition-check-failure": ("ReturnValuesOnConditionCheckFailure", "str"),
++    "--table-name": ("TableName", "str"),
++}
++
++CREATE_TABLE_FLAGS = {
++    "--attribute-definitions": ("AttributeDefinitions", "adefs"),
++    "--billing-mode": ("BillingMode", "str"),
++    "--deletion-protection-enabled": ("DeletionProtectionEnabled", "bool"),
++    "--no-deletion-protection-enabled": ("DeletionProtectionEnabled", "boolfalse"),
++    "--global-secondary-indexes": ("GlobalSecondaryIndexes", "json"),
++    "--global-table-settings-replication-mode": ("GlobalTableSettingsReplicationMode", "str"),
++    "--global-table-source-arn": ("GlobalTableSourceArn", "str"),
++    "--key-schema": ("KeySchema", "kschema"),
++    "--local-secondary-indexes": ("LocalSecondaryIndexes", "json"),
++    "--on-demand-throughput": ("OnDemandThroughput", "json"),
++    "--provisioned-throughput": ("ProvisionedThroughput", "prov"),
++    "--resource-policy": ("ResourcePolicy", "str"),
++    "--sse-specification": ("SSESpecification", "json"),
++    "--stream-specification": ("StreamSpecification", "json"),
++    "--table-class": ("TableClass", "str"),
++    "--table-name": ("TableName", "str"),
++    "--tags": ("Tags", "json"),
++    "--warm-throughput": ("WarmThroughput", "json"),
++}
++
++
++def parse_shorthand_list(values):
++    # values: list of tokens like AttributeName=pk,AttributeType=S
++    result = []
++    for tok in values:
++        d = {}
++        for part in tok.split(","):
++            if "=" not in part:
++                usage_error("Invalid shorthand: " + tok)
++            k, v = part.split("=", 1)
++            d[k] = v
++        result.append(d)
++    return result
++
++
++def parse_shorthand_single(value):
++    d = {}
++    for part in value.split(","):
++        if "=" not in part:
++            usage_error("Invalid shorthand: " + value)
++        k, v = part.split("=", 1)
++        d[k] = v
++    return d
++
++
++def parse_args(flags, argv):
++    # argv is the list after subcommand
++    result = {}
++    seen = set()
++    i = 0
++    n = len(argv)
++    while i < n:
++        tok = argv[i]
++        if not tok.startswith("--"):
++            usage_error("Unknown argument: " + tok)
++        if tok not in flags:
++            usage_error("Unknown option: " + tok)
++        field, typ = flags[tok]
++        if tok in seen:
++            usage_error("Duplicate option: " + tok)
++        seen.add(tok)
++        if typ in ("bool", "boolfalse"):
++            result[field] = (typ == "bool")
++            i += 1
++            continue
++        if typ == "adefs":
++            # collect following non-flag tokens
++            vals = []
++            i += 1
++            while i < n and not argv[i].startswith("--"):
++                vals.append(argv[i])
++                i += 1
++            if not vals:
++                usage_error("Missing value for " + tok)
++            # could be shorthand or json
++            if len(vals) == 1 and vals[0].lstrip().startswith(("[", "{")):
++                try:
++                    result[field] = json.loads(vals[0])
++                except Exception:
++                    usage_error("Invalid JSON for " + tok)
++            else:
++                result[field] = parse_shorthand_list(vals)
++            continue
++        if typ == "kschema":
++            vals = []
++            i += 1
++            while i < n and not argv[i].startswith("--"):
++                vals.append(argv[i])
++                i += 1
++            if not vals:
++                usage_error("Missing value for " + tok)
++            if len(vals) == 1 and vals[0].lstrip().startswith(("[", "{")):
++                try:
++                    result[field] = json.loads(vals[0])
++                except Exception:
++                    usage_error("Invalid JSON for " + tok)
++            else:
++                result[field] = parse_shorthand_list(vals)
++            continue
++        if typ == "prov":
++            i += 1
++            if i >= n:
++                usage_error("Missing value for " + tok)
++            val = argv[i]
++            i += 1
++            if val.lstrip().startswith(("{", "[")):
++                try:
++                    result[field] = json.loads(val)
++                except Exception:
++                    usage_error("Invalid JSON for " + tok)
++            else:
++                d = parse_shorthand_single(val)
++                out = {}
++                for k, v in d.items():
++                    try:
++                        out[k] = int(v)
++                    except Exception:
++                        out[k] = v
++                result[field] = out
++            continue
++        # str, json, jsonlist need a value
++        i += 1
++        if i >= n:
++            usage_error("Missing value for " + tok)
++        val = argv[i]
++        i += 1
++        if typ == "str":
++            result[field] = val
++        elif typ == "json":
++            try:
++                result[field] = json.loads(val)
++            except Exception:
++                usage_error("Invalid JSON for " + tok)
++        elif typ == "jsonlist":
++            try:
++                result[field] = json.loads(val)
++            except Exception:
++                usage_error("Invalid JSON for " + tok)
++    return result
++
++
++def do_get_item(argv):
++    params = parse_args(GET_ITEM_FLAGS, argv)
++    if "TableName" not in params or not params.get("TableName"):
++        usage_error("--table-name is required")
++    if "Key" not in params:
++        usage_error("--key is required")
++    try:
++        resp = call("GetItem", params)
++    except ServiceError as e:
++        sys.stderr.write(e.code() + ": " + e.message() + "\n")
++        sys.exit(254)
++    out = {}
++    if "Item" in resp:
++        out["Item"] = resp["Item"]
++    if "ConsumedCapacity" in resp:
++        out["ConsumedCapacity"] = resp["ConsumedCapacity"]
++    if out:
++        print(json.dumps(out, indent=4))
++    sys.exit(0)
++
++
++def do_put_item(argv):
++    params = parse_args(PUT_ITEM_FLAGS, argv)
++    if "TableName" not in params or not params.get("TableName"):
++        usage_error("--table-name is required")
++    if "Item" not in params:
++        usage_error("--item is required")
++    try:
++        resp = call("PutItem", params)
++    except ServiceError as e:
++        sys.stderr.write(e.code() + ": " + e.message() + "\n")
++        sys.exit(254)
++    if resp:
++        print(json.dumps(resp, indent=4))
++    sys.exit(0)
++
++
++def do_create_table(argv):
++    params = parse_args(CREATE_TABLE_FLAGS, argv)
++    if "TableName" not in params or not params.get("TableName"):
++        usage_error("--table-name is required")
++    try:
++        resp = call("CreateTable", params)
++    except ServiceError as e:
++        sys.stderr.write(e.code() + ": " + e.message() + "\n")
++        sys.exit(254)
++    if resp:
++        print(json.dumps(resp, indent=4, default=str))
++    sys.exit(0)
++
++
++def main():
++    argv = sys.argv
++    if len(argv) < 3:
++        usage_error("missing command")
++    sub = argv[2]
++    rest = argv[3:]
++    if sub == "get-item":
++        do_get_item(rest)
++    elif sub == "put-item":
++        do_put_item(rest)
++    elif sub == "create-table":
++        do_create_table(rest)
++    else:
++        usage_error("Unknown subcommand: " + sub)
++
++
++if __name__ == "__main__":
++    main()
