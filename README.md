@@ -45,7 +45,7 @@ a **held-out test suite run against the agent's own solution**.
 | :------------------- | :------------------------------------------------------------------------------------ |
 | Tasks                | **30**: 10 Kubernetes (kubectl / kwok) + 20 AWS (DynamoDB, KMS, SQS, Cognito, S3, Kinesis) |
 | Graded runs          | **60** (2 models × 30 tasks × 1 run; full grid, no gaps)                               |
-| Policy models        | `claude-opus-4-8`, `gpt-5.6-sol`                                                       |
+| Policy models        | `opus-4-8`, `gpt-5.6-sol`                                                       |
 | Shipped tests        | **6,852** hidden end-to-end tests across the corpus                                    |
 | Simulation backends  | kwok, DynamoDB Local, local-kms, ElasticMQ, cognito-local, MinIO, kinesalite          |
 | Reward               | continuous `passed / (passed + failed + errors) ∈ [0, 1]`; collection-drift → 0       |
@@ -94,7 +94,7 @@ directory** that carries its own definition, both models' runs, and every verifi
     test_<...>.py              the hidden graded suite (the frozen tests)
     rubrics.json               the LLM-judge contract (rubric criteria)
     test_outputs.py            held-out frozen tests authored from TRUTH.md (overfit probe)
-  trajectories/<model>/run_1/          # model ∈ {claude-opus-4-8, gpt-5.6-sol}
+  trajectories/<model>/run_1/          # model ∈ {opus-4-8, gpt-5.6-sol}
     agent/                     trajectory.json, run_agent.py, openhands_sdk.txt,
                                result.json, config.json
     verifiers/
@@ -216,12 +216,12 @@ The reward and full diagnostics for every run are already shipped under
 import json, glob, collections, statistics as st
 by_model = collections.defaultdict(list)
 for rp in glob.glob("*/trajectories/*/run_1/verifiers/atif_verifier/reward.txt"):
-    model = rp.split("/")[2]                       # claude-opus-4-8 | gpt-5.6-sol
+    model = rp.split("/")[2]                       # opus-4-8 | gpt-5.6-sol
     by_model[model].append(float(open(rp).read().strip()))
 for m, xs in sorted(by_model.items()):
     print(f"{m:16s} n={len(xs)} mean={st.mean(xs):.4f} "
           f"min={min(xs):.3f} max={max(xs):.3f}")
-# -> claude-opus-4-8  n=30 mean=0.7814 min=0.115 max=0.992
+# -> opus-4-8  n=30 mean=0.7814 min=0.115 max=0.992
 # -> gpt-5.6-sol      n=30 mean=0.8932 min=0.443 max=1.000
 ```
 
