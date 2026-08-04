@@ -76,28 +76,28 @@ def pytest_configure(config):
     if not (_kubectl_exists or _mainpy_exists):
         pytest.exit(
             f"Anti-NOP guard FAILED: no submission entrypoint found "
-            f"(tried {_kubectl}, {_mainpy}). Reward=0.",
+            f"(tried {_kubectl}, {_mainpy}). Score=0.",
             returncode=1,
         )
     if _kubectl_exists:
         if not os.access(_kubectl, os.X_OK):
             pytest.exit(
-                "submission/kubectl missing/non-exec/empty (not executable). Reward=0.",
+                "submission/kubectl missing/non-exec/empty (not executable). Score=0.",
                 returncode=1,
             )
         if os.path.getsize(_kubectl) <= 0:
             pytest.exit(
-                "submission/kubectl missing/non-exec/empty (zero-byte file). Reward=0.",
+                "submission/kubectl missing/non-exec/empty (zero-byte file). Score=0.",
                 returncode=1,
             )
     if shutil.which("kubectl") is None:
         pytest.exit(
-            "Anti-NOP guard FAILED: kubectl binary not found on PATH. Reward=0.",
+            "Anti-NOP guard FAILED: kubectl binary not found on PATH. Score=0.",
             returncode=1,
         )
     if shutil.which("kwokctl") is None:
         pytest.exit(
-            "Anti-NOP guard FAILED: kwokctl binary not found on PATH. Reward=0.",
+            "Anti-NOP guard FAILED: kwokctl binary not found on PATH. Score=0.",
             returncode=1,
         )
 

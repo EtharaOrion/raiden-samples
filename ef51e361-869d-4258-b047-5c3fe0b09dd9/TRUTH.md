@@ -64,7 +64,7 @@ Multiple valid implementation routes exist; none should be penalized relative to
 
 ## Cheat surface
 
-- A solution that only implements a handful of the 13 kinds (e.g., just Pod/Deployment) and stubs/errors on the rest would fail the broad kind-coverage tests — this must not be rewarded as "mostly working."
+- A solution that only implements a handful of the 13 kinds (e.g., just Pod/Deployment) and stubs/errors on the rest would fail the broad kind-coverage tests — this must not be scored as "mostly working."
 - A solution that hardcodes fixed stdout strings without actually calling the apiserver (i.e., faking `created`/`deleted` without real state mutation) would fail the get-after-create / read-after-delete state-invariant checks — mere string-matching on stdout without real backend calls is not sufficient and should be caught by lifecycle sequence tests.
 - A solution that always exits 0 or always exits 1 regardless of case would fail the exit-code matrix; graders must check exact codes per scenario, not just "some failure occurred."
 - A solution that shells out to a genuine pre-installed `kubectl` binary already present in the image is a gray area: since the task says "no source code, only this specification" and asks to build the CLI, delegating entirely to a real kubectl already on PATH substantially bypasses the intended build effort. If a real kubectl is available and simply invoked with KUBECONFIG passed through, it may still be judged by the grader purely on behavior — this is only acceptable if the task environment doesn't clearly prohibit it; treat heavy reliance on an already-present full kubectl as a risk area to flag, not necessarily disqualifying by itself, but a solution reimplementing the logic is unambiguously safe.

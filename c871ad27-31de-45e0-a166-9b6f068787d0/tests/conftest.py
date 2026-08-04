@@ -75,12 +75,12 @@ def pytest_configure(config):
     if shutil.which("aws") is None:
         pytest.exit(
             "Anti-NOP guard FAILED: no `aws` executable on $PATH "
-            "(no submission to evaluate). Reward=0.",
+            "(no submission to evaluate). Score=0.",
             returncode=1,
         )
     if shutil.which("minio") is None:
         pytest.exit(
-            "MinIO server binary not found on $PATH. Reward=0.",
+            "MinIO server binary not found on $PATH. Score=0.",
             returncode=1,
         )
 

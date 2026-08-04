@@ -13,7 +13,7 @@ python -m pytest "$SCRIPT_DIR" -v --tb=short -p no:randomly \
     > /logs/verifier/pytest_output.log 2>&1
 cat /logs/verifier/pytest_output.log
 
-TASK_TOML="$TASK_TOML" python3 << 'PY' > /logs/verifier/reward.txt
+TASK_TOML="$TASK_TOML" python3 << 'PY' > /logs/verifier/score.txt
 import os, re, sys, xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -31,7 +31,7 @@ if TOML and Path(TOML).exists():
 try:
     root = ET.parse(XML).getroot()
 except Exception as e:
-    sys.stderr.write(f"reward parser v2: could not parse {XML}: {e}\n")
+    sys.stderr.write(f"score parser v2: could not parse {XML}: {e}\n")
     print("0.0")
     sys.exit(0)
 
@@ -46,8 +46,8 @@ passed = tests - failures - errors - skipped
 
 if expected is not None and tests < expected:
     sys.stderr.write(
-        f"reward parser v2: COLLECTION DRIFT - task.toml.tests_shipped={expected} "
-        f"but JUnit reports tests={tests}. Reward=0.\n"
+        f"score parser v2: COLLECTION DRIFT - task.toml.tests_shipped={expected} "
+        f"but JUnit reports tests={tests}. Score=0.\n"
     )
     print("0.0")
     sys.exit(0)
@@ -56,6 +56,6 @@ total = passed + failures + errors
 print(round(passed / total, 4) if total else 0.0)
 PY
 
-REWARD=$(cat /logs/verifier/reward.txt)
-echo "reward=$REWARD parser=v2"
+SCORE=$(cat /logs/verifier/score.txt)
+echo "score=$SCORE parser=v2"
 exit 0

@@ -53,7 +53,7 @@ def pytest_configure(config):
     if not os.path.exists("/workspace/submission/aws"):
         pytest.exit(
             "Anti-NOP guard FAILED: submission entrypoint /workspace/submission/aws "
-            "not found (no submission to evaluate). Reward=0.",
+            "not found (no submission to evaluate). Score=0.",
             returncode=1,
         )
 

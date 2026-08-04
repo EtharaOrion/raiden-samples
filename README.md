@@ -26,12 +26,12 @@ an `instruction.md`, hides the test suite, and grades the resulting submission o
 end-to-end tests that pass. Where SWE-style benchmarks patch a single issue in an existing
 codebase, Raiden targets **full implementation from scratch** of a real CLI contract (argument
 dispatch, wire semantics, output shape, error / exit-code behavior, and cross-command state
-persistence), scored on a continuous reward built for RL training.
+persistence), graded by a continuous score built for RL training.
 
 This is a curated **30-task** sample spanning a **Kubernetes** CLI (`kubectl` against a kwok
 control plane) and **six AWS service families** (DynamoDB, KMS, SQS, Cognito, S3, Kinesis). Every
-task is paired with the complete agent trajectories of **two frontier models** (**Claude Opus
-4.8** and **GPT-5.6**) at 1 run per model, for **60 graded runs** in total. Each run carries the
+task is paired with the complete agent trajectories of **two frontier models** (**Opus 4.8**
+and **GPT-5.6**) at 1 run per model, for **60 graded runs** in total. Each run carries the
 full output of the **Raiden verifier**: a deterministic legitimacy gate, an LLM-judged rubric, and
 a **held-out test suite run against the agent's own solution**.
 
@@ -48,15 +48,15 @@ a **held-out test suite run against the agent's own solution**.
 | Policy models        | `opus-4-8`, `gpt-5.6-sol`                                                       |
 | Shipped tests        | **6,852** hidden end-to-end tests across the corpus                                    |
 | Simulation backends  | kwok, DynamoDB Local, local-kms, ElasticMQ, cognito-local, MinIO, kinesalite          |
-| Reward               | continuous `passed / (passed + failed + errors) ∈ [0, 1]`; collection-drift → 0       |
+| Score                | continuous `passed / (passed + failed + errors) ∈ [0, 1]`; collection-drift → 0       |
 | Gate outcome         | **60 / 60 runs `accept`**, **30 / 30 datasets `accept`**                               |
 
-**Mean reward on this sample** (the authoritative outcome, fraction of the hidden suite that passed):
+**Mean score on this sample** (the authoritative outcome, fraction of the hidden suite that passed):
 
 | Metric                              |  Value | Range          |
 | :---------------------------------- | -----: | :------------- |
-| GPT-5.6 **mean reward**             | 0.8932 | 0.443 – 1.000  |
-| Claude Opus 4.8 **mean reward**     | 0.7814 | 0.115 – 0.992  |
+| GPT-5.6 **mean score**             | 0.8932 | 0.443 – 1.000  |
+| Opus 4.8 **mean score**            | 0.7814 | 0.115 – 0.992  |
 | Held-out pass-rate **mean** (n=60)  | 0.7755 | 0.000 – 1.000  |
 
 ## What's in the box
@@ -88,7 +88,7 @@ directory** that carries its own definition, both models' runs, and every verifi
   environment/                 Dockerfile + docker-compose (pinned image, network-isolated)
   solution/                    golden.diff, reference.diff, solve.sh (the oracle)
   tests/
-    conftest.py  test.sh       the shipped harness (backend boot + reward parser v2)
+    conftest.py  test.sh       the shipped harness (backend boot + score parser v2)
     __init__.py                marks tests/ as a package for collection
     _ddb_http.py / _s3_http.py stdlib-only wire client (DynamoDB / S3 families only)
     test_<...>.py              the hidden graded suite (the frozen tests)
@@ -101,7 +101,7 @@ directory** that carries its own definition, both models' runs, and every verifi
       report.json              THE verdict: gate (accept/quarantine) + graded process score
       pytest_results.json      HELD-OUT: test_outputs.py run against THIS model's solution
       rubric_results.json      LLM-judge verdicts, evidence-cited
-      atif_verifier/           the graded outputs: results.xml, reward.txt, test-stdout.txt
+      atif_verifier/           the graded outputs: results.xml, score.txt, test-stdout.txt
 ```
 
 Every `<uuid>/` follows this exact layout. The only per-family variation is the required wire
@@ -126,15 +126,15 @@ run's outcome, token / cost accounting, and configuration.
 **Verifier output (how Raiden graded it).** `verifiers/report.json` carries the gate decision
 (`accept` / `quarantine`) and a process `graded_score`; `pytest_results.json` holds the held-out
 result; `rubric_results.json` the per-criterion LLM-judge verdicts; and `atif_verifier/` the
-authoritative graded outputs (`results.xml`, `reward.txt`, `test-stdout.txt`).
+authoritative graded outputs (`results.xml`, `score.txt`, `test-stdout.txt`).
 
 ## Results
 
-Reward is the fraction of the hidden suite that passed (the authoritative outcome). *Held-out* is
+Score is the fraction of the hidden suite that passed (the authoritative outcome). *Held-out* is
 the pass-rate of a **separately-authored** test suite run against each model's reconstructed
 solution, a check on generalization beyond the visible tests.
 
-| Family | Tasks | Shipped tests | Reward (Opus 4.8) | Reward (GPT-5.6) | Held-out (mean) |
+| Family | Tasks | Shipped tests | Score (Opus 4.8) | Score (GPT-5.6) | Held-out (mean) |
 |---|---:|---:|---:|---:|---:|
 | Kubernetes (kubectl / kwok) | 10 | 3,875 | 0.78 | 0.79 | 0.54 |
 | AWS DynamoDB | 8 | 876 | 0.60 | 1.00 | 0.96 |
@@ -145,34 +145,34 @@ solution, a check on generalization beyond the visible tests.
 | AWS Kinesis | 1 | 98 | 0.94 | 0.95 | 0.54 |
 | **Corpus** | **30** | **6,852** | **0.78** | **0.89** | **0.78** |
 
-Reward spans the full range (Opus 0.115–0.992, GPT 0.443–1.000); low scores are legitimate
-outcomes on hard subsets, not verifier failures. Because the reward is fractional per test rather
+Score spans the full range (Opus 0.115–0.992, GPT 0.443–1.000); low scores are legitimate
+outcomes on hard subsets, not verifier failures. Because the score is fractional per test rather
 than all-or-nothing, partial progress on a long implementation stays visible in the RL signal even
 when a strict `pass@1` would read zero. All 30 datasets and all 60 runs pass the deterministic +
 Claude-judged gate.
 
-### Reward decay across difficulty tiers
+### Score decay across difficulty tiers
 
-Stratifying the 60 runs into five tiers **by observed reward** (Trivial `R=1.0` · Easy `≥0.80` ·
-Medium `≥0.50` · Hard `≥0.30` · Expert `<0.30`) shows a clean monotone decay for both models: the
-corpus contains genuinely costly work, not just easy wins.
+Binning each model's 30 tasks into five score bands (Trivial `S≥0.95`, Easy `0.85–0.95`, Medium
+`0.70–0.85`, Hard `0.50–0.70`, Expert `S<0.50`) gives a clean staircase decay for both models: each
+band's mean falls in a distinct range, so the score separates difficulty instead of saturating
+near the top.
 
-![Reward decay across difficulty tiers: Claude Opus 4.8 vs GPT-5.6 mean reward per tier, both declining monotonically from ~0.93 (Easy) to ~0.19 (Expert)](images/reward-decay-by-tier.png)
+![Score decay across difficulty tiers: Opus 4.8 and GPT-5.6-sol mean score per band, both decaying across Trivial to Expert](images/score-decay-by-tier.png)
 
-The two curves cross in the hard band (GPT holds 0.443 on Hard where Opus falls to 0.389, and Opus
-is the only model with runs in the Expert tier at 0.193) but track closely elsewhere. The per-tier
-run counts (`n = opus/gpt`) are Trivial 0/8, Easy 22/18, Medium 2/3, Hard 3/1, Expert 3/0; the
-tier-weighted means reconcile exactly to the corpus figures: **Opus 4.8 = 0.781**, **GPT-5.6 =
-0.893** across all 30 tasks each.
+Opus 4.8 decays `0.985 → 0.919 → 0.795 → 0.534 → 0.291` (n = 6/14/3/1/6); GPT-5.6-sol decays
+`0.994 → 0.908 → 0.791 → 0.523 → 0.443` (n = 12/13/2/2/1). Both saturate the top bands, but GPT-5.6
+holds up markedly better on the hardest tasks (Expert 0.443 vs 0.291). Each model's band means
+reconcile to its corpus figure: **Opus 4.8 = 0.781**, **GPT-5.6 = 0.893** across all 30 tasks each.
 
 ### Effort escalation: cost and tokens by tier
 
 Difficulty shows up in the accounting, not just the score: harder tiers cost more dollars **and**
 burn more output tokens for both models, peaking at the Hard tier before the low-`n` Expert /
 Trivial ends taper off. Values below are per-run means from each run's `agent/result.json`
-(`cost_usd`, `n_output_tokens`), binned by the same reward tiers.
+(`cost_usd`, `n_output_tokens`), binned by per-run score tiers (Trivial `S=1.0`, Easy `≥0.80`, Medium `≥0.50`, Hard `≥0.30`, Expert `<0.30`).
 
-![Effort escalation by tier: mean cost per task (USD) and mean output tokens for Claude Opus 4.8 vs GPT-5.6, both rising into the Hard tier](images/effort-escalation-by-tier.png)
+![Effort escalation by tier: mean cost per task (USD) and mean output tokens for Opus 4.8 vs GPT-5.6-sol, both rising into the Hard tier](images/effort-escalation-by-tier.png)
 
 | Tier | Cost Opus | Cost GPT | Tokens Opus | Tokens GPT |
 |---|---:|---:|---:|---:|
@@ -183,8 +183,8 @@ Trivial ends taper off. Values below are per-run means from each run's `agent/re
 | Expert | $1.08 | n/a | 26,807 | n/a |
 
 GPT-5.6 spends **more dollars per task** than Opus in every shared tier (e.g. Hard $3.65 vs $2.76),
-while Opus emits **more output tokens** (Hard 43,556 vs 39,057), a pricing-vs-verbosity split. As
-in the reward figure, Trivial has GPT-only runs and Expert has Opus-only runs (`n = opus/gpt`:
+while Opus emits **more output tokens** (Hard 43,556 vs 39,057), a pricing-vs-verbosity split. Under this per-run tiering only GPT reached a perfect score and
+only Opus fell below 0.30, so Trivial is GPT-only and Expert is Opus-only (`n = opus/gpt`:
 0/8 · 22/18 · 2/3 · 3/1 · 3/0).
 
 ## Coverage
@@ -194,7 +194,7 @@ carries the bulk of the hidden suite (3,875 of 6,852 tests) because `kubectl` ag
 control plane exercises the widest command grammar; the AWS families cover narrower but
 wire-exact contracts (DynamoDB-JSON, KMS envelopes, SQS/Cognito/Kinesis actions, S3 REST + XML).
 Each task implements a **subset** of its surface's command set, and the per-task subset size drives
-the reward-granularity design.
+the score-granularity design.
 
 | Family                       | Tasks | Backend            | Shipped tests |
 | :--------------------------- | ----: | :----------------- | ------------: |
@@ -209,13 +209,13 @@ the reward-granularity design.
 
 ## Reproduction
 
-The reward and full diagnostics for every run are already shipped under
+The score and full diagnostics for every run are already shipped under
 `<uuid>/trajectories/<model>/run_1/`. No re-execution is needed to read them.
 
 ```python
 import json, glob, collections, statistics as st
 by_model = collections.defaultdict(list)
-for rp in glob.glob("*/trajectories/*/run_1/verifiers/atif_verifier/reward.txt"):
+for rp in glob.glob("*/trajectories/*/run_1/verifiers/atif_verifier/score.txt"):
     model = rp.split("/")[2]                       # opus-4-8 | gpt-5.6-sol
     by_model[model].append(float(open(rp).read().strip()))
 for m, xs in sorted(by_model.items()):
