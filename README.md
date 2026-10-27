@@ -78,3 +78,9 @@ Released under the [MIT License](LICENSE). Any datasets or task bundles produced
 - Organization: [Ethara.AI](https://github.com/Ethara-Ai)
 - Security and benchmark-integrity disclosure: see [SECURITY.md](SECURITY.md)
 - Contribution route: see [CONTRIBUTING.md](CONTRIBUTING.md)
+
+---
+
+## Copyright
+
+Copyright (c) 2026 Green Rider Technology LLP (Ethara AI). All rights reserved.
